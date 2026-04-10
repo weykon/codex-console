@@ -1,5 +1,5 @@
 #!/bin/bash
-# Cross-platform build script. Run it on the target OS you want to package for.
+# 跨平台打包脚本（在各平台上分别运行）
 
 set -e
 
@@ -25,26 +25,25 @@ case "$OS" in
     ;;
 esac
 
-OUTPUT_NAME="codex-console-${PLATFORM}-${ARCH}${EXT}"
+OUTPUT_NAME="codex-register-${PLATFORM}-${ARCH}${EXT}"
 
-echo "=== Build platform: ${PLATFORM} (${ARCH}) ==="
-echo "=== Output file: dist/${OUTPUT_NAME} ==="
+echo "=== 构建平台: ${PLATFORM} (${ARCH}) ==="
+echo "=== 输出文件: dist/${OUTPUT_NAME} ==="
 
-# Install build dependency.
+# 安装打包依赖
 pip install pyinstaller --quiet 2>/dev/null || \
   uv run --with pyinstaller pyinstaller --version > /dev/null 2>&1
 
-# Run PyInstaller. Prefer uv when available.
+# 执行打包（优先用 uv，回退到直接调用）
 if command -v uv &>/dev/null; then
   uv run --with pyinstaller pyinstaller codex_register.spec --clean --noconfirm
 else
   pyinstaller codex_register.spec --clean --noconfirm
 fi
 
-# Rename the generated binary to include platform metadata.
-rm -f "dist/${OUTPUT_NAME}"
-mv "dist/codex-console${EXT}" "dist/${OUTPUT_NAME}" 2>/dev/null || \
-  mv "dist/codex-console" "dist/${OUTPUT_NAME}" 2>/dev/null
+# 重命名输出文件
+mv dist/codex-register${EXT} dist/${OUTPUT_NAME} 2>/dev/null || \
+  mv "dist/codex-register" "dist/${OUTPUT_NAME}" 2>/dev/null || true
 
-echo "=== Build complete: dist/${OUTPUT_NAME} ==="
-ls -lh "dist/${OUTPUT_NAME}"
+echo "=== 构建完成: dist/${OUTPUT_NAME} ==="
+ls -lh dist/${OUTPUT_NAME}

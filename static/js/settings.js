@@ -9,8 +9,6 @@ const elements = {
     tabContents: document.querySelectorAll('.tab-content'),
     registrationForm: document.getElementById('registration-settings-form'),
     backupBtn: document.getElementById('backup-btn'),
-    importDbBtn: document.getElementById('import-db-btn'),
-    dbImportFile: document.getElementById('db-import-file'),
     cleanupBtn: document.getElementById('cleanup-btn'),
     addEmailServiceBtn: document.getElementById('add-email-service-btn'),
     addServiceModal: document.getElementById('add-service-modal'),
@@ -31,20 +29,21 @@ const elements = {
     selectAllServices: document.getElementById('select-all-services'),
     // 代理列表
     proxiesTable: document.getElementById('proxies-table'),
+    selectAllProxies: document.getElementById('select-all-proxies'),
     addProxyBtn: document.getElementById('add-proxy-btn'),
-    proxyBatchImportBtn: document.getElementById('proxy-batch-import-btn'),
+    batchDeleteProxiesBtn: document.getElementById('batch-delete-proxies-btn'),
     testAllProxiesBtn: document.getElementById('test-all-proxies-btn'),
+    deleteDisabledProxiesBtn: document.getElementById('delete-disabled-proxies-btn'),
+    batchImportProxyBtn: document.getElementById('batch-import-proxy-btn'),
+    batchImportProxyModal: document.getElementById('batch-import-proxy-modal'),
+    closeBatchImportProxyModal: document.getElementById('close-batch-import-proxy-modal'),
+    cancelBatchImportProxyBtn: document.getElementById('cancel-batch-import-proxy-btn'),
+    confirmBatchImportProxyBtn: document.getElementById('confirm-batch-import-proxy-btn'),
     addProxyModal: document.getElementById('add-proxy-modal'),
     proxyItemForm: document.getElementById('proxy-item-form'),
     closeProxyModal: document.getElementById('close-proxy-modal'),
     cancelProxyBtn: document.getElementById('cancel-proxy-btn'),
     proxyModalTitle: document.getElementById('proxy-modal-title'),
-    proxyBatchImportModal: document.getElementById('proxy-batch-import-modal'),
-    closeProxyBatchImportModal: document.getElementById('close-proxy-batch-import-modal'),
-    cancelProxyBatchImportBtn: document.getElementById('cancel-proxy-batch-import-btn'),
-    proxyBatchImportForm: document.getElementById('proxy-batch-import-form'),
-    proxyBatchImportText: document.getElementById('proxy-batch-import-text'),
-    proxyBatchImportResult: document.getElementById('proxy-batch-import-result'),
     // 动态代理设置
     dynamicProxyForm: document.getElementById('dynamic-proxy-form'),
     testDynamicProxyBtn: document.getElementById('test-dynamic-proxy-btn'),
@@ -75,24 +74,25 @@ const elements = {
     tmServiceForm: document.getElementById('tm-service-form'),
     tmServiceModalTitle: document.getElementById('tm-service-modal-title'),
     testTmServiceBtn: document.getElementById('test-tm-service-btn'),
-    addNewApiServiceBtn: document.getElementById('add-new-api-service-btn'),
-    newApiServicesTable: document.getElementById('new-api-services-table'),
-    newApiServiceEditModal: document.getElementById('new-api-service-edit-modal'),
-    closeNewApiServiceModal: document.getElementById('close-new-api-service-modal'),
-    cancelNewApiServiceBtn: document.getElementById('cancel-new-api-service-btn'),
-    newApiServiceForm: document.getElementById('new-api-service-form'),
-    newApiServiceModalTitle: document.getElementById('new-api-service-modal-title'),
-    testNewApiServiceBtn: document.getElementById('test-new-api-service-btn'),
+    addNewapiServiceBtn: document.getElementById('add-newapi-service-btn'),
+    newapiServicesTable: document.getElementById('newapi-services-table'),
+    newapiServiceEditModal: document.getElementById('newapi-service-edit-modal'),
+    closeNewapiServiceModal: document.getElementById('close-newapi-service-modal'),
+    cancelNewapiServiceBtn: document.getElementById('cancel-newapi-service-btn'),
+    newapiServiceForm: document.getElementById('newapi-service-form'),
+    newapiServiceModalTitle: document.getElementById('newapi-service-modal-title'),
     // 验证码设置
     emailCodeForm: document.getElementById('email-code-form'),
     // Outlook 设置
     outlookSettingsForm: document.getElementById('outlook-settings-form'),
-    // 系统设置（端口 + 访问控制）
-    systemSettingsForm: document.getElementById('system-settings-form')
+    // Web UI 访问控制
+    webuiSettingsForm: document.getElementById('webui-settings-form')
 };
 
 // 选中的服务 ID
 let selectedServiceIds = new Set();
+let selectedProxyIds = new Set();
+let disabledProxyCount = 0;
 
 // 初始化
 document.addEventListener('DOMContentLoaded', () => {
@@ -104,7 +104,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadCpaServices();
     loadSub2ApiServices();
     loadTmServices();
-    loadNewApiServices();
+    loadNewapiServices();
     initEventListeners();
 });
 
@@ -137,14 +137,6 @@ function initEventListeners() {
     // 备份数据库
     if (elements.backupBtn) {
         elements.backupBtn.addEventListener('click', handleBackup);
-    }
-    // 导入数据库
-    if (elements.importDbBtn && elements.dbImportFile) {
-        elements.importDbBtn.addEventListener('click', () => {
-            elements.dbImportFile.value = '';
-            elements.dbImportFile.click();
-        });
-        elements.dbImportFile.addEventListener('change', handleImportDatabase);
     }
 
     // 清理数据
@@ -227,12 +219,55 @@ function initEventListeners() {
     if (elements.addProxyBtn) {
         elements.addProxyBtn.addEventListener('click', () => openProxyModal());
     }
-    if (elements.proxyBatchImportBtn) {
-        elements.proxyBatchImportBtn.addEventListener('click', openProxyBatchImportModal);
+
+    if (elements.batchImportProxyBtn) {
+        elements.batchImportProxyBtn.addEventListener('click', () => {
+            document.getElementById('batch-import-proxy-data').value = '';
+            document.getElementById('batch-import-proxy-result').innerHTML = '';
+            elements.batchImportProxyModal.classList.add('active');
+        });
+    }
+
+    if (elements.closeBatchImportProxyModal) {
+        elements.closeBatchImportProxyModal.addEventListener('click', () => {
+            elements.batchImportProxyModal.classList.remove('active');
+        });
+    }
+
+    if (elements.cancelBatchImportProxyBtn) {
+        elements.cancelBatchImportProxyBtn.addEventListener('click', () => {
+            elements.batchImportProxyModal.classList.remove('active');
+        });
+    }
+
+    if (elements.confirmBatchImportProxyBtn) {
+        elements.confirmBatchImportProxyBtn.addEventListener('click', handleBatchImportProxies);
+    }
+
+    if (elements.batchImportProxyModal) {
+        elements.batchImportProxyModal.addEventListener('click', (e) => {
+            if (e.target === elements.batchImportProxyModal) {
+                elements.batchImportProxyModal.classList.remove('active');
+            }
+        });
     }
 
     if (elements.testAllProxiesBtn) {
         elements.testAllProxiesBtn.addEventListener('click', handleTestAllProxies);
+    }
+
+    if (elements.selectAllProxies) {
+        elements.selectAllProxies.addEventListener('change', (e) => {
+            toggleSelectAllProxies(e.target.checked);
+        });
+    }
+
+    if (elements.batchDeleteProxiesBtn) {
+        elements.batchDeleteProxiesBtn.addEventListener('click', handleBatchDeleteProxies);
+    }
+
+    if (elements.deleteDisabledProxiesBtn) {
+        elements.deleteDisabledProxiesBtn.addEventListener('click', handleDeleteDisabledProxies);
     }
 
     if (elements.closeProxyModal) {
@@ -254,22 +289,6 @@ function initEventListeners() {
     if (elements.proxyItemForm) {
         elements.proxyItemForm.addEventListener('submit', handleSaveProxyItem);
     }
-    if (elements.closeProxyBatchImportModal) {
-        elements.closeProxyBatchImportModal.addEventListener('click', closeProxyBatchImportModal);
-    }
-    if (elements.cancelProxyBatchImportBtn) {
-        elements.cancelProxyBatchImportBtn.addEventListener('click', closeProxyBatchImportModal);
-    }
-    if (elements.proxyBatchImportModal) {
-        elements.proxyBatchImportModal.addEventListener('click', (e) => {
-            if (e.target === elements.proxyBatchImportModal) {
-                closeProxyBatchImportModal();
-            }
-        });
-    }
-    if (elements.proxyBatchImportForm) {
-        elements.proxyBatchImportForm.addEventListener('submit', handleProxyBatchImport);
-    }
 
     // 动态代理设置
     if (elements.dynamicProxyForm) {
@@ -289,8 +308,8 @@ function initEventListeners() {
         elements.outlookSettingsForm.addEventListener('submit', handleSaveOutlookSettings);
     }
 
-    if (elements.systemSettingsForm) {
-        elements.systemSettingsForm.addEventListener('submit', handleSaveSystemSettings);
+    if (elements.webuiSettingsForm) {
+        elements.webuiSettingsForm.addEventListener('submit', handleSaveWebuiSettings);
     }
     // Team Manager 服务管理
     if (elements.addTmServiceBtn) {
@@ -313,27 +332,24 @@ function initEventListeners() {
     if (elements.testTmServiceBtn) {
         elements.testTmServiceBtn.addEventListener('click', handleTestTmService);
     }
-    if (elements.addNewApiServiceBtn) {
-        elements.addNewApiServiceBtn.addEventListener('click', () => openNewApiServiceModal());
+
+    if (elements.addNewapiServiceBtn) {
+        elements.addNewapiServiceBtn.addEventListener('click', () => openNewapiServiceModal());
     }
-    if (elements.closeNewApiServiceModal) {
-        elements.closeNewApiServiceModal.addEventListener('click', closeNewApiServiceModal);
+    if (elements.closeNewapiServiceModal) {
+        elements.closeNewapiServiceModal.addEventListener('click', closeNewapiServiceModal);
     }
-    if (elements.cancelNewApiServiceBtn) {
-        elements.cancelNewApiServiceBtn.addEventListener('click', closeNewApiServiceModal);
+    if (elements.cancelNewapiServiceBtn) {
+        elements.cancelNewapiServiceBtn.addEventListener('click', closeNewapiServiceModal);
     }
-    if (elements.newApiServiceEditModal) {
-        elements.newApiServiceEditModal.addEventListener('click', (e) => {
-            if (e.target === elements.newApiServiceEditModal) closeNewApiServiceModal();
+    if (elements.newapiServiceEditModal) {
+        elements.newapiServiceEditModal.addEventListener('click', (e) => {
+            if (e.target === elements.newapiServiceEditModal) closeNewapiServiceModal();
         });
     }
-    if (elements.newApiServiceForm) {
-        elements.newApiServiceForm.addEventListener('submit', handleSaveNewApiService);
+    if (elements.newapiServiceForm) {
+        elements.newapiServiceForm.addEventListener('submit', handleSaveNewapiService);
     }
-    if (elements.testNewApiServiceBtn) {
-        elements.testNewApiServiceBtn.addEventListener('click', handleTestNewApiService);
-    }
-
     // CPA 服务管理
     if (elements.addCpaServiceBtn) {
         elements.addCpaServiceBtn.addEventListener('click', () => openCpaServiceModal());
@@ -394,9 +410,6 @@ async function loadSettings() {
         document.getElementById('max-retries').value = data.registration?.max_retries || 3;
         document.getElementById('timeout').value = data.registration?.timeout || 120;
         document.getElementById('password-length').value = data.registration?.default_password_length || 12;
-        const entryFlowRaw = String(data.registration?.entry_flow || 'native').toLowerCase();
-        const entryFlow = entryFlowRaw === 'abcard' ? 'abcard' : 'native';
-        document.getElementById('registration-entry-flow').value = entryFlow;
         document.getElementById('sleep-min').value = data.registration?.sleep_min || 5;
         document.getElementById('sleep-max').value = data.registration?.sleep_max || 30;
 
@@ -404,24 +417,19 @@ async function loadSettings() {
         if (data.email_code) {
             document.getElementById('email-code-timeout').value = data.email_code.timeout || 120;
             document.getElementById('email-code-poll-interval').value = data.email_code.poll_interval || 3;
+            document.getElementById('email-code-resend-max-retries').value = data.email_code.resend_max_retries ?? 2;
+            document.getElementById('email-code-non-openai-sender-resend-max-retries').value = data.email_code.non_openai_sender_resend_max_retries ?? 1;
         }
 
         // 加载 Outlook 设置
         loadOutlookSettings();
 
-        // 系统设置（端口 + 访问密码）
-        const webuiPortInput = document.getElementById('webui-port');
-        if (webuiPortInput) {
-            webuiPortInput.value = data.webui?.port || 1455;
-        }
-        const passwordInput = document.getElementById('webui-access-password');
-        if (passwordInput) {
-            if (data.webui?.has_access_password) {
-                passwordInput.value = '';
-                passwordInput.placeholder = '已配置，留空保持不变';
-            } else {
-                passwordInput.value = '';
-                passwordInput.placeholder = '未配置，留空表示不修改';
+        // Web UI 访问密码提示
+        if (data.webui?.has_access_password) {
+            const input = document.getElementById('webui-access-password');
+            if (input) {
+                input.value = '';
+                input.placeholder = '已配置，留空保持不变';
             }
         }
 
@@ -431,29 +439,22 @@ async function loadSettings() {
     }
 }
 
-// 保存系统设置（端口 + 访问控制）
-async function handleSaveSystemSettings(e) {
+// 保存 Web UI 设置
+async function handleSaveWebuiSettings(e) {
     e.preventDefault();
 
-    const portRaw = document.getElementById('webui-port')?.value;
-    const parsedPort = parseInt(portRaw, 10);
     const accessPassword = document.getElementById('webui-access-password').value;
-    const payload = {};
-    if (Number.isFinite(parsedPort) && parsedPort > 0 && parsedPort <= 65535) {
-        payload.port = parsedPort;
-    }
-    if (accessPassword) {
-        payload.access_password = accessPassword;
-    }
+    const payload = {
+        access_password: accessPassword || null
+    };
 
     try {
         await api.post('/settings/webui', payload);
-        toast.success('系统设置已更新');
+        toast.success('Web UI 设置已更新');
         document.getElementById('webui-access-password').value = '';
-        await loadSettings();
     } catch (error) {
-        console.error('保存系统设置失败:', error);
-        toast.error('保存系统设置失败');
+        console.error('保存 Web UI 设置失败:', error);
+        toast.error('保存 Web UI 设置失败');
     }
 }
 
@@ -553,7 +554,6 @@ async function handleSaveRegistration(e) {
         max_retries: parseInt(document.getElementById('max-retries').value),
         timeout: parseInt(document.getElementById('timeout').value),
         default_password_length: parseInt(document.getElementById('password-length').value),
-        entry_flow: document.getElementById('registration-entry-flow').value || 'native',
         sleep_min: parseInt(document.getElementById('sleep-min').value),
         sleep_max: parseInt(document.getElementById('sleep-max').value),
     };
@@ -583,9 +583,23 @@ async function handleSaveEmailCode(e) {
         return;
     }
 
+    const resendMaxRetries = parseInt(document.getElementById('email-code-resend-max-retries').value);
+    const nonOpenaiSenderResendMaxRetries = parseInt(document.getElementById('email-code-non-openai-sender-resend-max-retries').value);
+
+    if (resendMaxRetries < 0 || resendMaxRetries > 10) {
+        toast.error('重发次数必须在 0-10 之间');
+        return;
+    }
+    if (nonOpenaiSenderResendMaxRetries < 0 || nonOpenaiSenderResendMaxRetries > 10) {
+        toast.error('非 OpenAI 发件人重发次数必须在 0-10 之间');
+        return;
+    }
+
     const data = {
         timeout: timeout,
-        poll_interval: pollInterval
+        poll_interval: pollInterval,
+        resend_max_retries: resendMaxRetries,
+        non_openai_sender_resend_max_retries: nonOpenaiSenderResendMaxRetries
     };
 
     try {
@@ -609,48 +623,6 @@ async function handleBackup() {
     } finally {
         elements.backupBtn.disabled = false;
         elements.backupBtn.textContent = '💾 备份数据库';
-    }
-}
-
-// 导入数据库
-async function handleImportDatabase() {
-    const file = elements.dbImportFile?.files?.[0];
-    if (!file) return;
-
-    const confirmed = await confirm(
-        `确定导入数据库文件「${file.name}」吗？系统会先自动备份当前数据库，再执行覆盖导入。`
-    );
-    if (!confirmed) {
-        elements.dbImportFile.value = '';
-        return;
-    }
-
-    const originText = elements.importDbBtn.textContent;
-    elements.importDbBtn.disabled = true;
-    elements.importDbBtn.innerHTML = '<span class="loading-spinner"></span> 导入中...';
-
-    try {
-        const formData = new FormData();
-        formData.append('file', file);
-
-        const resp = await fetch('/api/settings/database/import', {
-            method: 'POST',
-            body: formData
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) {
-            throw new Error(data.detail || `HTTP ${resp.status}`);
-        }
-
-        const backupText = data.backup_path ? `，备份: ${data.backup_path}` : '';
-        toast.success(`导入成功，已覆盖数据库${backupText}`);
-        await loadDatabaseInfo();
-    } catch (error) {
-        toast.error('导入失败: ' + error.message);
-    } finally {
-        elements.dbImportFile.value = '';
-        elements.importDbBtn.disabled = false;
-        elements.importDbBtn.textContent = originText || '📥 导入数据';
     }
 }
 
@@ -891,12 +863,16 @@ function escapeHtml(text) {
 async function loadProxies() {
     try {
         const data = await api.get('/settings/proxies');
+        syncSelectedProxyIds(data.proxies || []);
         renderProxies(data.proxies);
     } catch (error) {
         console.error('加载代理列表失败:', error);
+        selectedProxyIds = new Set();
+        disabledProxyCount = 0;
+        updateProxyBatchActions();
         elements.proxiesTable.innerHTML = `
             <tr>
-                <td colspan="8">
+                <td colspan="9">
                     <div class="empty-state">
                         <div class="empty-state-icon">❌</div>
                         <div class="empty-state-title">加载失败</div>
@@ -910,9 +886,12 @@ async function loadProxies() {
 // 渲染代理列表
 function renderProxies(proxies) {
     if (!proxies || proxies.length === 0) {
+        selectedProxyIds = new Set();
+        disabledProxyCount = 0;
+        updateProxyBatchActions();
         elements.proxiesTable.innerHTML = `
             <tr>
-                <td colspan="8">
+                <td colspan="9">
                     <div class="empty-state">
                         <div class="empty-state-icon">🌐</div>
                         <div class="empty-state-title">暂无代理</div>
@@ -924,15 +903,27 @@ function renderProxies(proxies) {
         return;
     }
 
+    disabledProxyCount = proxies.filter((proxy) => proxy && proxy.enabled === false).length;
+
     elements.proxiesTable.innerHTML = proxies.map(proxy => `
         <tr data-proxy-id="${proxy.id}">
+            <td style="text-align:center;">
+                <input
+                    type="checkbox"
+                    class="proxy-checkbox"
+                    data-id="${proxy.id}"
+                    ${selectedProxyIds.has(proxy.id) ? 'checked' : ''}
+                    onchange="updateSelectedProxies()"
+                    aria-label="选择代理 ${proxy.id}"
+                >
+            </td>
             <td>${proxy.id}</td>
             <td>${escapeHtml(proxy.name)}</td>
             <td><span class="badge">${proxy.type.toUpperCase()}</span></td>
             <td><code>${escapeHtml(proxy.host)}:${proxy.port}</code></td>
             <td>
                 ${proxy.is_default
-                    ? '<span class="status-badge active">默认</span>'
+                    ? `<button class="btn btn-ghost btn-sm" onclick="handleUnsetProxyDefault(${proxy.id})" title="取消默认">取消默认</button>`
                     : `<button class="btn btn-ghost btn-sm" onclick="handleSetProxyDefault(${proxy.id})" title="设为默认">设默认</button>`
                 }
             </td>
@@ -946,7 +937,10 @@ function renderProxies(proxies) {
                         <div class="dropdown-menu" style="min-width:80px;">
                             <a href="#" class="dropdown-item" onclick="event.preventDefault();closeSettingsMoreMenu(this);testProxyItem(${proxy.id})">测试</a>
                             <a href="#" class="dropdown-item" onclick="event.preventDefault();closeSettingsMoreMenu(this);toggleProxyItem(${proxy.id}, ${!proxy.enabled})">${proxy.enabled ? '禁用' : '启用'}</a>
-                            ${!proxy.is_default ? `<a href="#" class="dropdown-item" onclick="event.preventDefault();closeSettingsMoreMenu(this);handleSetProxyDefault(${proxy.id})">设为默认</a>` : ''}
+                            ${proxy.is_default
+                                ? `<a href="#" class="dropdown-item" onclick="event.preventDefault();closeSettingsMoreMenu(this);handleUnsetProxyDefault(${proxy.id})">取消默认</a>`
+                                : `<a href="#" class="dropdown-item" onclick="event.preventDefault();closeSettingsMoreMenu(this);handleSetProxyDefault(${proxy.id})">设为默认</a>`
+                            }
                         </div>
                     </div>
                     <button class="btn btn-danger btn-sm" onclick="deleteProxyItem(${proxy.id})">删除</button>
@@ -954,6 +948,56 @@ function renderProxies(proxies) {
             </td>
         </tr>
     `).join('');
+
+    updateProxyBatchActions();
+}
+
+function syncSelectedProxyIds(proxies) {
+    const validIds = new Set((proxies || []).map(proxy => proxy.id));
+    selectedProxyIds = new Set([...selectedProxyIds].filter(id => validIds.has(id)));
+}
+
+function toggleSelectAllProxies(checked) {
+    document.querySelectorAll('.proxy-checkbox').forEach((checkbox) => {
+        checkbox.checked = checked;
+    });
+    updateSelectedProxies();
+}
+
+function updateSelectedProxies() {
+    selectedProxyIds = new Set(
+        [...document.querySelectorAll('.proxy-checkbox:checked')]
+            .map((checkbox) => parseInt(checkbox.dataset.id, 10))
+            .filter((id) => Number.isInteger(id) && id > 0)
+    );
+    updateProxyBatchActions();
+}
+
+function updateProxyBatchActions() {
+    const proxyCheckboxes = [...document.querySelectorAll('.proxy-checkbox')];
+    const checkedCount = selectedProxyIds.size;
+
+    if (elements.selectAllProxies) {
+        const totalCount = proxyCheckboxes.length;
+        const allChecked = totalCount > 0 && checkedCount === totalCount;
+        elements.selectAllProxies.checked = allChecked;
+        elements.selectAllProxies.indeterminate = checkedCount > 0 && checkedCount < totalCount;
+        elements.selectAllProxies.disabled = totalCount === 0;
+    }
+
+    if (elements.batchDeleteProxiesBtn) {
+        elements.batchDeleteProxiesBtn.disabled = checkedCount === 0;
+        elements.batchDeleteProxiesBtn.textContent = checkedCount > 0
+            ? `🗑️ 批量删除 (${checkedCount})`
+            : '🗑️ 批量删除';
+    }
+
+    if (elements.deleteDisabledProxiesBtn) {
+        elements.deleteDisabledProxiesBtn.disabled = disabledProxyCount === 0;
+        elements.deleteDisabledProxiesBtn.textContent = disabledProxyCount > 0
+            ? `🧹 删除禁用项 (${disabledProxyCount})`
+            : '🧹 删除禁用项';
+    }
 }
 
 function toggleSettingsMoreMenu(btn) {
@@ -976,6 +1020,36 @@ async function handleSetProxyDefault(id) {
         loadProxies();
     } catch (error) {
         toast.error('操作失败: ' + error.message);
+    }
+}
+
+// 取消默认代理
+async function handleUnsetProxyDefault(id) {
+    try {
+        await api.post(`/settings/proxies/${id}/unset-default`);
+        toast.success('已取消默认代理');
+        loadProxies();
+    } catch (error) {
+        toast.error('操作失败: ' + error.message);
+    }
+}
+
+// 批量导入代理
+async function handleBatchImportProxies() {
+    const lines = document.getElementById('batch-import-proxy-data').value;
+    const resultEl = document.getElementById('batch-import-proxy-result');
+    if (!lines.trim()) {
+        resultEl.innerHTML = '<span style="color:var(--color-warning)">请输入代理数据</span>';
+        return;
+    }
+    try {
+        const result = await api.post('/settings/proxies/batch-import', { lines });
+        const color = result.failed > 0 ? 'var(--color-warning)' : 'var(--color-success)';
+        resultEl.innerHTML = `<span style="color:${color}">导入成功 ${result.success} 条，失败 ${result.failed} 条。</span>`
+            + (result.errors.length ? '<br><pre style="font-size:0.8rem;margin-top:4px;">' + result.errors.join('\n') + '</pre>' : '');
+        if (result.success > 0) await loadProxies();
+    } catch (error) {
+        resultEl.innerHTML = `<span style="color:var(--color-danger)">导入失败: ${error.message}</span>`;
     }
 }
 
@@ -1002,83 +1076,6 @@ function openProxyModal(proxy = null) {
 function closeProxyModal() {
     elements.addProxyModal.classList.remove('active');
     elements.proxyItemForm.reset();
-}
-
-function openProxyBatchImportModal() {
-    if (!elements.proxyBatchImportModal) return;
-    if (elements.proxyBatchImportForm) {
-        elements.proxyBatchImportForm.reset();
-    }
-    if (elements.proxyBatchImportResult) {
-        elements.proxyBatchImportResult.style.display = 'none';
-        elements.proxyBatchImportResult.innerHTML = '';
-    }
-    elements.proxyBatchImportModal.classList.add('active');
-}
-
-function closeProxyBatchImportModal() {
-    if (!elements.proxyBatchImportModal) return;
-    elements.proxyBatchImportModal.classList.remove('active');
-}
-
-function renderProxyBatchImportResult(result) {
-    if (!elements.proxyBatchImportResult) return;
-    const errors = Array.isArray(result?.errors) ? result.errors : [];
-    const preview = errors.slice(0, 20).map(item => {
-        const line = Number(item?.line || 0);
-        const raw = escapeHtml(String(item?.raw || ''));
-        const error = escapeHtml(String(item?.error || '解析失败'));
-        return `<li>第 ${line} 行：${error}${raw ? `（${raw}）` : ''}</li>`;
-    }).join('');
-    elements.proxyBatchImportResult.innerHTML = `
-        <div style="display:flex;gap:12px;flex-wrap:wrap;">
-            <span>✅ 新增: <strong>${result.created || 0}</strong></span>
-            <span>🔄 更新: <strong>${result.updated || 0}</strong></span>
-            <span>⏭️ 跳过: <strong>${result.skipped || 0}</strong></span>
-            <span>❌ 失败: <strong>${result.failed || 0}</strong></span>
-        </div>
-        ${preview ? `<div style="margin-top:8px;"><strong>错误明细（最多 20 条）：</strong><ul style="margin:6px 0 0 18px;">${preview}</ul></div>` : ''}
-    `;
-    elements.proxyBatchImportResult.style.display = '';
-}
-
-async function handleProxyBatchImport(e) {
-    e.preventDefault();
-    const content = String(elements.proxyBatchImportText?.value || '').trim();
-    if (!content) {
-        toast.warning('请先粘贴代理文本');
-        return;
-    }
-
-    const submitBtn = document.getElementById('submit-proxy-batch-import-btn');
-    if (submitBtn) {
-        submitBtn.disabled = true;
-        submitBtn.innerHTML = '<span class="loading-spinner"></span> 导入中...';
-    }
-
-    try {
-        const payload = {
-            content,
-            default_type: String(document.getElementById('proxy-batch-default-type')?.value || 'http'),
-            enabled: Boolean(document.getElementById('proxy-batch-import-enabled')?.checked),
-            overwrite_existing: Boolean(document.getElementById('proxy-batch-overwrite-existing')?.checked),
-        };
-        const result = await api.post('/settings/proxies/batch-import', payload);
-        renderProxyBatchImportResult(result);
-        await loadProxies();
-        if ((result.failed || 0) > 0) {
-            toast.warning(`导入完成：新增 ${result.created || 0}，更新 ${result.updated || 0}，失败 ${result.failed || 0}`);
-        } else {
-            toast.success(`导入完成：新增 ${result.created || 0}，更新 ${result.updated || 0}，跳过 ${result.skipped || 0}`);
-        }
-    } catch (error) {
-        toast.error('批量导入失败: ' + error.message);
-    } finally {
-        if (submitBtn) {
-            submitBtn.disabled = false;
-            submitBtn.textContent = '📥 开始导入';
-        }
-    }
 }
 
 // 保存代理
@@ -1158,6 +1155,49 @@ async function deleteProxyItem(id) {
         loadProxies();
     } catch (error) {
         toast.error('删除失败: ' + error.message);
+    }
+}
+
+async function handleBatchDeleteProxies() {
+    const ids = [...selectedProxyIds];
+    if (ids.length === 0) {
+        toast.error('请先选择要删除的代理');
+        return;
+    }
+
+    const confirmed = await confirm(`确定要批量删除选中的 ${ids.length} 个代理吗？`);
+    if (!confirmed) return;
+
+    try {
+        const result = await api.post('/settings/proxies/batch-delete', { ids });
+        const missingCount = Array.isArray(result.not_found_ids) ? result.not_found_ids.length : 0;
+        const summary = missingCount > 0
+            ? `${result.message}，其中 ${missingCount} 个代理不存在或已被删除`
+            : result.message;
+        toast.success(summary || `已删除 ${ids.length} 个代理`);
+        selectedProxyIds = new Set();
+        await loadProxies();
+    } catch (error) {
+        toast.error('批量删除失败: ' + error.message);
+    }
+}
+
+async function handleDeleteDisabledProxies() {
+    if (disabledProxyCount === 0) {
+        toast.error('当前没有可删除的禁用代理');
+        return;
+    }
+
+    const confirmed = await confirm(`确定要删除全部 ${disabledProxyCount} 个禁用代理吗？`);
+    if (!confirmed) return;
+
+    try {
+        const result = await api.post('/settings/proxies/delete-disabled');
+        selectedProxyIds = new Set();
+        toast.success(result.message || `已删除 ${result.deleted_count || 0} 个禁用代理`);
+        await loadProxies();
+    } catch (error) {
+        toast.error('删除禁用代理失败: ' + error.message);
     }
 }
 
@@ -1417,6 +1457,155 @@ async function handleTestTmService() {
     }
 }
 
+async function loadNewapiServices() {
+    if (!elements.newapiServicesTable) return;
+    try {
+        const services = await api.get('/newapi-services');
+        renderNewapiServicesTable(services);
+    } catch (e) {
+        elements.newapiServicesTable.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--danger-color);">${e.message}</td></tr>`;
+    }
+}
+
+function renderNewapiServicesTable(services) {
+    if (!services || services.length === 0) {
+        elements.newapiServicesTable.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:20px;">暂无 NEWAPI 服务，点击「添加服务」新增</td></tr>';
+        return;
+    }
+    elements.newapiServicesTable.innerHTML = services.map(s => `
+        <tr>
+            <td>${escapeHtml(s.name)}</td>
+            <td style="font-size:0.85rem;color:var(--text-muted);">${escapeHtml(s.api_url)}</td>
+            <td style="text-align:center;">${s.channel_type || 57}</td>
+            <td style="font-size:0.85rem;color:var(--text-muted);">${escapeHtml(s.channel_base_url || '')}</td>
+            <td style="font-size:0.8rem;color:var(--text-muted);max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(s.channel_models || '')}">${escapeHtml(s.channel_models || '')}</td>
+            <td style="text-align:center;" title="${s.enabled ? '已启用' : '已禁用'}">${s.enabled ? '✅' : '⭕'}</td>
+            <td style="text-align:center;">${s.priority}</td>
+            <td style="white-space:nowrap;">
+                <button class="btn btn-secondary btn-sm" onclick="editNewapiService(${s.id})">编辑</button>
+                <button class="btn btn-danger btn-sm" onclick="deleteNewapiService(${s.id}, '${escapeHtml(s.name)}')">删除</button>
+            </td>
+        </tr>
+    `).join('');
+}
+
+function openNewapiServiceModal(service = null) {
+    const defaultModels = 'gpt-5.4,gpt-5,gpt-5-codex,gpt-5-codex-mini,gpt-5.1,gpt-5.1-codex,gpt-5.1-codex-max,gpt-5.1-codex-mini,gpt-5.2,gpt-5.2-codex,gpt-5.3-codex,gpt-5-openai-compact,gpt-5-codex-openai-compact,gpt-5-codex-mini-openai-compact,gpt-5.1-openai-compact,gpt-5.1-codex-openai-compact,gpt-5.1-codex-max-openai-compact,gpt-5.1-codex-mini-openai-compact,gpt-5.2-openai-compact,gpt-5.2-codex-openai-compact,gpt-5.3-codex-openai-compact';
+    document.getElementById('newapi-service-id').value = service ? service.id : '';
+    document.getElementById('newapi-service-name').value = service ? service.name : '';
+    document.getElementById('newapi-service-url').value = service ? service.api_url : '';
+    document.getElementById('newapi-service-key').value = '';
+    document.getElementById('newapi-service-channel-type').value = service ? (service.channel_type || 57) : 57;
+    document.getElementById('newapi-service-channel-base-url').value = service ? (service.channel_base_url || '') : '';
+    document.getElementById('newapi-service-channel-models').value = service ? (service.channel_models || defaultModels) : defaultModels;
+    document.getElementById('newapi-service-priority').value = service ? service.priority : 0;
+    document.getElementById('newapi-service-enabled').checked = service ? service.enabled : true;
+    if (service) {
+        document.getElementById('newapi-service-key').placeholder = service.has_key ? '已配置，留空保持不变' : '请输入 Root Token / API Key';
+    } else {
+        document.getElementById('newapi-service-key').placeholder = '请输入 Root Token / API Key';
+    }
+    elements.newapiServiceModalTitle.textContent = service ? '编辑 NEWAPI 服务' : '添加 NEWAPI 服务';
+    elements.newapiServiceEditModal.classList.add('active');
+}
+
+function closeNewapiServiceModal() {
+    elements.newapiServiceEditModal.classList.remove('active');
+}
+
+function validateNewapiApiKeyInput(apiKey, { required = false } = {}) {
+    const normalizedApiKey = String(apiKey || '').trim();
+    if (!normalizedApiKey) {
+        if (required) {
+            return '新增服务时 Root Token / API Key 不能为空';
+        }
+        return '';
+    }
+
+    for (const char of normalizedApiKey) {
+        const code = char.charCodeAt(0);
+        if (code > 127) {
+            return 'Root Token / API Key 只能包含 ASCII 字符，请粘贴实际令牌，不要填写中文说明';
+        }
+        if (code < 32 || code === 127) {
+            return 'Root Token / API Key 包含非法控制字符';
+        }
+    }
+
+    return '';
+}
+
+async function editNewapiService(id) {
+    try {
+        const service = await api.get(`/newapi-services/${id}`);
+        openNewapiServiceModal(service);
+    } catch (e) {
+        toast.error('获取服务信息失败: ' + e.message);
+    }
+}
+
+async function handleSaveNewapiService(e) {
+    e.preventDefault();
+    const id = document.getElementById('newapi-service-id').value;
+    const name = document.getElementById('newapi-service-name').value.trim();
+    const apiUrl = document.getElementById('newapi-service-url').value.trim();
+    const apiKey = document.getElementById('newapi-service-key').value.trim();
+    const channelType = parseInt(document.getElementById('newapi-service-channel-type').value) || 57;
+    const channelBaseUrl = document.getElementById('newapi-service-channel-base-url').value.trim();
+    const channelModels = document.getElementById('newapi-service-channel-models').value.trim();
+    const priority = parseInt(document.getElementById('newapi-service-priority').value) || 0;
+    const enabled = document.getElementById('newapi-service-enabled').checked;
+
+    if (!name || !apiUrl) {
+        toast.error('名称和 API URL 不能为空');
+        return;
+    }
+    const apiKeyValidationError = validateNewapiApiKeyInput(apiKey, { required: !id });
+    if (apiKeyValidationError) {
+        toast.error(apiKeyValidationError);
+        return;
+    }
+
+    try {
+        const payload = {
+            name,
+            api_url: apiUrl,
+            priority,
+            enabled,
+            channel_type: channelType,
+            channel_base_url: channelBaseUrl,
+            channel_models: channelModels,
+        };
+        if (apiKey) payload.api_key = apiKey;
+
+        if (id) {
+            await api.patch(`/newapi-services/${id}`, payload);
+            toast.success('服务已更新');
+        } else {
+            payload.api_key = apiKey;
+            await api.post('/newapi-services', payload);
+            toast.success('服务已添加');
+        }
+        closeNewapiServiceModal();
+        loadNewapiServices();
+    } catch (e) {
+        toast.error('保存失败: ' + e.message);
+    }
+}
+
+async function deleteNewapiService(id, name) {
+    const confirmed = await confirm(`确定要删除 NEWAPI 服务「${name}」吗？`);
+    if (!confirmed) return;
+    try {
+        await api.delete(`/newapi-services/${id}`);
+        toast.success('已删除');
+        loadNewapiServices();
+    } catch (e) {
+        toast.error('删除失败: ' + e.message);
+    }
+}
+
+
 
 // ============== CPA 服务管理 ==============
 
@@ -1439,7 +1628,7 @@ function renderCpaServicesTable(services) {
         <tr>
             <td>${escapeHtml(s.name)}</td>
             <td style="font-size:0.85rem;color:var(--text-muted);">${escapeHtml(s.api_url)}</td>
-            <td style="font-size:0.85rem;color:var(--text-muted);">${escapeHtml(s.proxy_url || '-')}</td>
+            <td style="text-align:center;">${s.include_proxy_url ? '🟢' : '⚪'}</td>
             <td style="text-align:center;" title="${s.enabled ? '已启用' : '已禁用'}">${s.enabled ? '✅' : '⭕'}</td>
             <td style="text-align:center;">${s.priority}</td>
             <td style="white-space:nowrap;">
@@ -1456,9 +1645,9 @@ function openCpaServiceModal(service = null) {
     document.getElementById('cpa-service-name').value = service ? service.name : '';
     document.getElementById('cpa-service-url').value = service ? service.api_url : '';
     document.getElementById('cpa-service-token').value = '';
-    document.getElementById('cpa-service-proxy-url').value = service ? (service.proxy_url || '') : '';
     document.getElementById('cpa-service-priority').value = service ? service.priority : 0;
     document.getElementById('cpa-service-enabled').checked = service ? service.enabled : true;
+    document.getElementById('cpa-service-include-proxy-url').checked = service ? !!service.include_proxy_url : false;
     elements.cpaServiceModalTitle.textContent = service ? '编辑 CPA 服务' : '添加 CPA 服务';
     elements.cpaServiceEditModal.classList.add('active');
 }
@@ -1482,9 +1671,9 @@ async function handleSaveCpaService(e) {
     const name = document.getElementById('cpa-service-name').value.trim();
     const apiUrl = document.getElementById('cpa-service-url').value.trim();
     const apiToken = document.getElementById('cpa-service-token').value.trim();
-    const proxyUrl = document.getElementById('cpa-service-proxy-url').value.trim();
     const priority = parseInt(document.getElementById('cpa-service-priority').value) || 0;
     const enabled = document.getElementById('cpa-service-enabled').checked;
+    const includeProxyUrl = document.getElementById('cpa-service-include-proxy-url').checked;
 
     if (!name || !apiUrl) {
         toast.error('名称和 API URL 不能为空');
@@ -1496,7 +1685,7 @@ async function handleSaveCpaService(e) {
     }
 
     try {
-        const payload = { name, api_url: apiUrl, proxy_url: proxyUrl, priority, enabled };
+        const payload = { name, api_url: apiUrl, priority, enabled, include_proxy_url: includeProxyUrl };
         if (apiToken) payload.api_token = apiToken;
 
         if (id) {
@@ -1590,7 +1779,7 @@ async function loadSub2ApiServices() {
         renderSub2ApiServices(services);
     } catch (e) {
         if (elements.sub2ApiServicesTable) {
-            elements.sub2ApiServicesTable.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:20px;">加载失败</td></tr>';
+            elements.sub2ApiServicesTable.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:20px;">加载失败</td></tr>';
         }
     }
 }
@@ -1598,14 +1787,13 @@ async function loadSub2ApiServices() {
 function renderSub2ApiServices(services) {
     if (!elements.sub2ApiServicesTable) return;
     if (!services || services.length === 0) {
-        elements.sub2ApiServicesTable.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:20px;">暂无 Sub2API 服务，点击「添加服务」新增</td></tr>';
+        elements.sub2ApiServicesTable.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:20px;">暂无 Sub2API 服务，点击「添加服务」新增</td></tr>';
         return;
     }
     elements.sub2ApiServicesTable.innerHTML = services.map(s => `
         <tr>
             <td>${escapeHtml(s.name)}</td>
             <td style="font-size:0.85rem;color:var(--text-muted);">${escapeHtml(s.api_url)}</td>
-            <td style="text-align:center;">${String(s.target_type || 'sub2api').toLowerCase() === 'newapi' ? 'newApi' : 'Sub2Api'}</td>
             <td style="text-align:center;" title="${s.enabled ? '已启用' : '已禁用'}">${s.enabled ? '✅' : '⭕'}</td>
             <td style="text-align:center;">${s.priority}</td>
             <td style="white-space:nowrap;">
@@ -1627,10 +1815,7 @@ function openSub2ApiServiceModal(svc = null) {
         document.getElementById('sub2api-service-url').value = svc.api_url || '';
         document.getElementById('sub2api-service-priority').value = svc.priority ?? 0;
         document.getElementById('sub2api-service-enabled').checked = svc.enabled !== false;
-        document.getElementById('sub2api-service-target-type').value = String(svc.target_type || 'sub2api').toLowerCase() === 'newapi' ? 'newapi' : 'sub2api';
         document.getElementById('sub2api-service-key').placeholder = svc.has_key ? '已配置，留空保持不变' : '请输入 API Key';
-    } else {
-        document.getElementById('sub2api-service-target-type').value = 'sub2api';
     }
     elements.sub2ApiServiceEditModal.classList.add('active');
 }
@@ -1651,8 +1836,7 @@ async function editSub2ApiService(id) {
 }
 
 async function deleteSub2ApiService(id, name) {
-    const confirmed = await confirm(`确认删除 Sub2API 服务「${name}」吗？`, "删除 Sub2API 服务");
-    if (!confirmed) return;
+    if (!confirm(`确认删除 Sub2API 服务「${name}」？`)) return;
     try {
         await api.delete(`/sub2api-services/${id}`);
         toast.success('服务已删除');
@@ -1669,7 +1853,6 @@ async function handleSaveSub2ApiService(e) {
         name: document.getElementById('sub2api-service-name').value,
         api_url: document.getElementById('sub2api-service-url').value,
         api_key: document.getElementById('sub2api-service-key').value || undefined,
-        target_type: document.getElementById('sub2api-service-target-type').value || 'sub2api',
         priority: parseInt(document.getElementById('sub2api-service-priority').value) || 0,
         enabled: document.getElementById('sub2api-service-enabled').checked,
     };
@@ -1741,162 +1924,6 @@ async function handleTestSub2ApiService() {
     } finally {
         elements.testSub2ApiServiceBtn.disabled = false;
         elements.testSub2ApiServiceBtn.textContent = '🔌 测试连接';
-    }
-}
-
-async function loadNewApiServices() {
-    if (!elements.newApiServicesTable) return;
-    try {
-        const services = await api.get('/new-api-services');
-        renderNewApiServicesTable(services);
-    } catch (e) {
-        elements.newApiServicesTable.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--danger-color);">${e.message}</td></tr>`;
-    }
-}
-
-function renderNewApiServicesTable(services) {
-    if (!services || services.length === 0) {
-        elements.newApiServicesTable.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:20px;">暂无 new-api 服务，点击「添加服务」新增</td></tr>';
-        return;
-    }
-    elements.newApiServicesTable.innerHTML = services.map(s => `
-        <tr>
-            <td>${escapeHtml(s.name)}</td>
-            <td style="font-size:0.85rem;color:var(--text-muted);">${escapeHtml(s.api_url)}<br><span style="font-size:0.75rem;color:var(--text-muted);">${escapeHtml(s.username || '')}</span></td>
-            <td style="text-align:center;" title="${s.enabled ? '已启用' : '已禁用'}">${s.enabled ? '✅' : '⭕'}</td>
-            <td style="text-align:center;">${s.priority}</td>
-            <td style="white-space:nowrap;">
-                <button class="btn btn-secondary btn-sm" onclick="editNewApiService(${s.id})">编辑</button>
-                <button class="btn btn-secondary btn-sm" onclick="testNewApiServiceById(${s.id})">测试</button>
-                <button class="btn btn-danger btn-sm" onclick="deleteNewApiService(${s.id}, '${escapeHtml(s.name)}')">删除</button>
-            </td>
-        </tr>
-    `).join('');
-}
-
-function openNewApiServiceModal(service = null) {
-    document.getElementById('new-api-service-id').value = service ? service.id : '';
-    document.getElementById('new-api-service-name').value = service ? service.name : '';
-    document.getElementById('new-api-service-url').value = service ? service.api_url : '';
-    document.getElementById('new-api-service-username').value = service ? (service.username || '') : '';
-    document.getElementById('new-api-service-password').value = '';
-    document.getElementById('new-api-service-priority').value = service ? service.priority : 0;
-    document.getElementById('new-api-service-enabled').checked = service ? service.enabled : true;
-    document.getElementById('new-api-service-password').placeholder = service && service.has_password ? '已配置，留空保持不变' : '请输入管理员密码';
-    elements.newApiServiceModalTitle.textContent = service ? '编辑 new-api 服务' : '添加 new-api 服务';
-    elements.newApiServiceEditModal.classList.add('active');
-}
-
-function closeNewApiServiceModal() {
-    elements.newApiServiceEditModal.classList.remove('active');
-}
-
-async function editNewApiService(id) {
-    try {
-        const service = await api.get(`/new-api-services/${id}`);
-        openNewApiServiceModal(service);
-    } catch (e) {
-        toast.error('获取服务信息失败: ' + e.message);
-    }
-}
-
-async function handleSaveNewApiService(e) {
-    e.preventDefault();
-    const id = document.getElementById('new-api-service-id').value;
-    const name = document.getElementById('new-api-service-name').value.trim();
-    const apiUrl = document.getElementById('new-api-service-url').value.trim();
-    const username = document.getElementById('new-api-service-username').value.trim();
-    const password = document.getElementById('new-api-service-password').value.trim();
-    const priority = parseInt(document.getElementById('new-api-service-priority').value) || 0;
-    const enabled = document.getElementById('new-api-service-enabled').checked;
-
-    if (!name || !apiUrl || !username) {
-        toast.error('名称、API URL 和管理员用户名不能为空');
-        return;
-    }
-    if (!id && !password) {
-        toast.error('新增服务时管理员密码不能为空');
-        return;
-    }
-
-    try {
-        const payload = { name, api_url: apiUrl, username, priority, enabled };
-        if (password) payload.password = password;
-
-        if (id) {
-            await api.patch(`/new-api-services/${id}`, payload);
-            toast.success('服务已更新');
-        } else {
-            await api.post('/new-api-services', payload);
-            toast.success('服务已添加');
-        }
-        closeNewApiServiceModal();
-        loadNewApiServices();
-    } catch (e) {
-        toast.error('保存失败: ' + e.message);
-    }
-}
-
-async function deleteNewApiService(id, name) {
-    const confirmed = await confirm(`确定要删除 new-api 服务「${name}」吗？`);
-    if (!confirmed) return;
-    try {
-        await api.delete(`/new-api-services/${id}`);
-        toast.success('已删除');
-        loadNewApiServices();
-    } catch (e) {
-        toast.error('删除失败: ' + e.message);
-    }
-}
-
-async function testNewApiServiceById(id) {
-    try {
-        const result = await api.post(`/new-api-services/${id}/test`);
-        if (result.success) {
-            toast.success(result.message);
-        } else {
-            toast.error(result.message);
-        }
-    } catch (e) {
-        toast.error('测试失败: ' + e.message);
-    }
-}
-
-async function handleTestNewApiService() {
-    const apiUrl = document.getElementById('new-api-service-url').value.trim();
-    const username = document.getElementById('new-api-service-username').value.trim();
-    const password = document.getElementById('new-api-service-password').value.trim();
-    const id = document.getElementById('new-api-service-id').value;
-
-    if (!apiUrl || !username) {
-        toast.error('请先填写 API URL 和管理员用户名');
-        return;
-    }
-    if (!id && !password) {
-        toast.error('请先填写管理员密码');
-        return;
-    }
-
-    elements.testNewApiServiceBtn.disabled = true;
-    elements.testNewApiServiceBtn.textContent = '测试中...';
-
-    try {
-        let result;
-        if (id && !password) {
-            result = await api.post(`/new-api-services/${id}/test`);
-        } else {
-            result = await api.post('/new-api-services/test-connection', { api_url: apiUrl, username, password });
-        }
-        if (result.success) {
-            toast.success(result.message);
-        } else {
-            toast.error(result.message);
-        }
-    } catch (e) {
-        toast.error('测试失败: ' + e.message);
-    } finally {
-        elements.testNewApiServiceBtn.disabled = false;
-        elements.testNewApiServiceBtn.textContent = '🔌 测试连接';
     }
 }
 

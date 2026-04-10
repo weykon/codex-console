@@ -1,7 +1,7 @@
 [project]
-name = "codex-console"
-version = "1.1.2"
-description = "OpenAI account management console"
+name = "codex-register-v2"
+version = "1.0.4"
+description = "OpenAI 自动注册系统 v2"
 requires-python = ">=3.10"
 dependencies = [
     "curl-cffi>=0.14.0",
@@ -12,11 +12,11 @@ dependencies = [
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
     "sqlalchemy>=2.0.0",
-    "alembic>=1.13.0",
     "aiosqlite>=0.19.0",
     "psycopg[binary]>=3.1.18",
     "websockets>=16.0",
     "path>=17.1.1",
+    "httpx>=0.28.1",
 ]
 
 [project.optional-dependencies]
@@ -24,12 +24,9 @@ dev = [
     "pytest>=7.0.0",
     "httpx>=0.24.0",
 ]
-payment = [
-    "playwright>=1.40.0",
-]
 
 [project.scripts]
-codex-console = "webui:main"
+codex-webui = "webui:main"
 
 [build-system]
 requires = ["hatchling"]

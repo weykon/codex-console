@@ -1,51 +1,20 @@
 @echo off
-setlocal
-setlocal enabledelayedexpansion
+REM Windows 打包脚本
 
-echo === Build platform: Windows ===
+echo === 构建平台: Windows ===
 
-where python >nul 2>nul
-if errorlevel 1 (
-    echo Python was not found in PATH.
-    exit /b 1
-)
+REM 安装打包依赖
+pip install pyinstaller --quiet
 
-if exist requirements.txt (
-    echo Installing project dependencies...
-    python -m pip install -r requirements.txt
-    if errorlevel 1 (
-        echo Failed to install project dependencies.
-        exit /b 1
-    )
-)
+REM 执行打包
+pyinstaller codex_register.spec --clean --noconfirm
 
-echo Installing PyInstaller...
-python -m pip install pyinstaller --quiet
-if errorlevel 1 (
-    echo Failed to install PyInstaller.
-    exit /b 1
-)
-
-echo Running PyInstaller...
-python -m PyInstaller codex_register.spec --clean --noconfirm
-if errorlevel 1 (
-    echo PyInstaller build failed.
-    exit /b 1
-)
-
-if exist dist\codex-console.exe (
-    for /f "tokens=*" %%i in ('powershell -Command "[System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture"') do set ARCH=%%i
-    set OUTPUT=dist\codex-console-windows-!ARCH!.exe
-    if exist "!OUTPUT!" del /F /Q "!OUTPUT!" >nul 2>nul
-    move /Y dist\codex-console.exe "!OUTPUT!" >nul
-    if errorlevel 1 (
-        echo === Build complete, but final rename was blocked. ===
-        echo Close any running copy of !OUTPUT! and rename dist\codex-console.exe manually if needed.
-        echo Fresh binary is available at: dist\codex-console.exe
-        exit /b 0
-    )
-    echo === Build complete: !OUTPUT! ===
-) else (
-    echo === Build failed: dist\codex-console.exe not found ===
+IF EXIST dist\codex-register.exe (
+    FOR /F "tokens=*" %%i IN ('powershell -Command "[System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture"') DO SET ARCH=%%i
+    SET OUTPUT=dist\codex-register-windows-%ARCH%.exe
+    MOVE dist\codex-register.exe "%OUTPUT%"
+    echo === 构建完成: %OUTPUT% ===
+) ELSE (
+    echo === 构建失败，未找到输出文件 ===
     exit /b 1
 )

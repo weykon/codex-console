@@ -1,9 +1,24 @@
-"""Project package."""
+"""
+OpenAI/Codex CLI 自动注册系统
+"""
 
-__version__ = "1.1.2"
+from .config import get_settings, EmailServiceType
+from .database import get_db, Account, EmailService, RegistrationTask
+from .core import RegistrationEngine, RegistrationResult
+from .services import EmailServiceFactory, BaseEmailService
+
+__version__ = "2.0.0"
 __author__ = "Yasal"
 
 __all__ = [
-    "__version__",
-    "__author__",
+    'get_settings',
+    'EmailServiceType',
+    'get_db',
+    'Account',
+    'EmailService',
+    'RegistrationTask',
+    'RegistrationEngine',
+    'RegistrationResult',
+    'EmailServiceFactory',
+    'BaseEmailService',
 ]

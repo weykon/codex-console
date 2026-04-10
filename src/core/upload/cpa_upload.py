@@ -14,7 +14,6 @@ from curl_cffi import CurlMime
 from ...database.session import get_db
 from ...database.models import Account
 from ...config.settings import get_settings
-from ..timezone_utils import utcnow_naive
 
 logger = logging.getLogger(__name__)
 
@@ -90,17 +89,23 @@ def _post_cpa_auth_file_raw_json(upload_url: str, filename: str, file_content: b
     )
 
 
-def generate_token_json(account: Account) -> dict:
+def generate_token_json(
+    account: Account,
+    include_proxy_url: bool = False,
+    proxy_url: Optional[str] = None,
+) -> dict:
     """
     生成 CPA 格式的 Token JSON
 
     Args:
         account: 账号模型实例
+        include_proxy_url: 是否将账号代理写入 auth file 的 proxy_url 字段
+        proxy_url: 当账号本身没有记录代理时使用的兜底代理 URL
 
     Returns:
         CPA 格式的 Token 字典
     """
-    return {
+    token_data = {
         "type": "codex",
         "email": account.email,
         "expired": account.expires_at.strftime("%Y-%m-%dT%H:%M:%S+08:00") if account.expires_at else "",
@@ -110,6 +115,12 @@ def generate_token_json(account: Account) -> dict:
         "last_refresh": account.last_refresh.strftime("%Y-%m-%dT%H:%M:%S+08:00") if account.last_refresh else "",
         "refresh_token": account.refresh_token or "",
     }
+
+    resolved_proxy_url = (getattr(account, "proxy_used", None) or proxy_url or "").strip()
+    if include_proxy_url and resolved_proxy_url:
+        token_data["proxy_url"] = resolved_proxy_url
+
+    return token_data
 
 
 def upload_to_cpa(
@@ -186,15 +197,17 @@ def batch_upload_to_cpa(
     proxy: str = None,
     api_url: str = None,
     api_token: str = None,
+    include_proxy_url: bool = False,
 ) -> dict:
     """
     批量上传账号到 CPA 管理平台
 
     Args:
         account_ids: 账号 ID 列表
-        proxy: 可选的代理 URL
+        proxy: 可选的代理 URL（用于 auth file proxy_url 的兜底值）
         api_url: 指定 CPA API URL（优先于全局配置）
         api_token: 指定 CPA API Token（优先于全局配置）
+        include_proxy_url: 是否将账号代理写入 auth file 的 proxy_url 字段
 
     Returns:
         包含成功/失败统计和详情的字典
@@ -232,7 +245,11 @@ def batch_upload_to_cpa(
                 continue
 
             # 生成 Token JSON
-            token_data = generate_token_json(account)
+            token_data = generate_token_json(
+                account,
+                include_proxy_url=include_proxy_url,
+                proxy_url=proxy,
+            )
 
             # 上传
             success, message = upload_to_cpa(token_data, proxy, api_url=api_url, api_token=api_token)
@@ -240,7 +257,7 @@ def batch_upload_to_cpa(
             if success:
                 # 更新数据库状态
                 account.cpa_uploaded = True
-                account.cpa_uploaded_at = utcnow_naive()
+                account.cpa_uploaded_at = datetime.utcnow()
                 db.commit()
 
                 results["success_count"] += 1
@@ -260,70 +277,6 @@ def batch_upload_to_cpa(
                 })
 
     return results
-
-
-def list_cpa_auth_files(api_url: str, api_token: str) -> Tuple[bool, Any, str]:
-    """鍒楀嚭杩滅 CPA auth-files 娓呭崟銆?"""
-    if not api_url:
-        return False, None, "API URL 涓嶈兘涓虹┖"
-
-    if not api_token:
-        return False, None, "API Token 涓嶈兘涓虹┖"
-
-    list_url = _normalize_cpa_auth_files_url(api_url)
-    headers = _build_cpa_headers(api_token)
-
-    try:
-        response = cffi_requests.get(
-            list_url,
-            headers=headers,
-            proxies=None,
-            timeout=10,
-            impersonate="chrome110",
-        )
-        if response.status_code != 200:
-            return False, None, _extract_cpa_error(response)
-        return True, response.json(), "ok"
-    except cffi_requests.exceptions.ConnectionError as e:
-        return False, None, f"鏃犳硶杩炴帴鍒版湇鍔″櫒: {str(e)}"
-    except cffi_requests.exceptions.Timeout:
-        return False, None, "杩炴帴瓒呮椂锛岃妫€鏌ョ綉缁滈厤缃?"
-    except Exception as e:
-        logger.error("鑾峰彇 CPA auth-files 娓呭崟寮傚父: %s", e)
-        return False, None, f"鑾峰彇 auth-files 澶辫触: {str(e)}"
-
-
-def count_ready_cpa_auth_files(payload: Any) -> int:
-    """缁熻鍙敤浜庤ˉ璐у垽鏂殑璁よ瘉鏂囦欢鏁伴噺銆?"""
-    if isinstance(payload, dict):
-        files = payload.get("files", [])
-    elif isinstance(payload, list):
-        files = payload
-    else:
-        return 0
-
-    ready_count = 0
-    for item in files:
-        if not isinstance(item, dict):
-            continue
-
-        status = str(item.get("status", "")).strip().lower()
-        provider = str(item.get("provider") or item.get("type") or "").strip().lower()
-        disabled = bool(item.get("disabled", False))
-        unavailable = bool(item.get("unavailable", False))
-
-        if disabled or unavailable:
-            continue
-
-        if provider != "codex":
-            continue
-
-        if status and status not in {"ready", "active"}:
-            continue
-
-        ready_count += 1
-
-    return ready_count
 
 
 def test_cpa_connection(api_url: str, api_token: str, proxy: str = None) -> Tuple[bool, str]:

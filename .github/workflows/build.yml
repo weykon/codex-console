@@ -1,72 +1,61 @@
-name: Multi-platform Build Release
+name: 多平台打包发布
 
 on:
   push:
     tags:
-      - "v*"
+      - 'v*'
   workflow_dispatch:
     inputs:
       version:
-        description: "Version tag, for example v1.0.0"
+        description: '版本号 (如 v1.0.0)'
         required: false
-        default: "dev"
+        default: 'dev'
 
 jobs:
   build:
-    name: Build ${{ matrix.os }}
+    name: 打包 ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: windows-latest
-            source_name: codex-console.exe
-            asset_name: codex-console-windows-x64.exe
+            artifact_name: codex-register.exe
+            asset_name: codex-register-v2-windows-x64.exe
           - os: ubuntu-latest
-            source_name: codex-console
-            asset_name: codex-console-linux-x64
-          - os: ubuntu-24.04-arm
-            source_name: codex-console
-            asset_name: codex-console-linux-arm64
+            artifact_name: codex-register
+            asset_name: codex-register-v2-linux-x64
           - os: macos-latest
-            source_name: codex-console
-            asset_name: codex-console-macos-arm64
-          - os: macos-26-intel
-            source_name: codex-console
-            asset_name: codex-console-macos-amd64
+            artifact_name: codex-register
+            asset_name: codex-register-v2-macos-arm64
 
     steps:
-      - name: Checkout code
+      - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: Setup Python 3.11
+      - name: 设置 Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-          cache: "pip"
+          python-version: '3.11'
+          cache: 'pip'
 
-      - name: Install dependencies
+      - name: 安装依赖
         run: |
           pip install -r requirements.txt pyinstaller
 
-      - name: Build binary
+      - name: 打包
         run: |
           pyinstaller codex_register.spec --clean --noconfirm
 
-      - name: Rename packaged binary
-        shell: bash
-        run: |
-          mv "dist/${{ matrix.source_name }}" "dist/${{ matrix.asset_name }}"
-
-      - name: Upload build artifact
+      - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset_name }}
-          path: dist/${{ matrix.asset_name }}
+          path: dist/${{ matrix.artifact_name }}
           if-no-files-found: error
 
   release:
-    name: Create release
+    name: 创建发布
     needs: build
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
@@ -74,46 +63,69 @@ jobs:
       contents: write
 
     steps:
-      - name: Checkout code
+      - name: 检出代码（获取附加文件）
         uses: actions/checkout@v4
 
-      - name: Download all artifacts
+      - name: 下载所有构建产物
         uses: actions/download-artifact@v4
         with:
           path: dist/
-          merge-multiple: true
 
-      - name: Create GitHub release
+      - name: 整理文件并打包 zip
+        run: |
+          mkdir -p release
+          # download-artifact@v4 将每个 artifact 放在 dist/<asset_name>/ 子目录下
+          # 遍历子目录，用目录名作为平台标识（即 matrix.asset_name）
+          for artifact_dir in dist/*/; do
+            platform=$(basename "$artifact_dir")
+            # 找到该目录下的二进制文件（只有一个）
+            binary=$(find "$artifact_dir" -maxdepth 1 -type f | head -n1)
+            if [ -z "$binary" ]; then
+              echo "警告：$artifact_dir 下没有找到文件，跳过"
+              continue
+            fi
+            tmpdir="tmp_${platform}"
+            mkdir -p "$tmpdir"
+            cp "$binary" "$tmpdir/"
+            cp README.md "$tmpdir/README.md"
+            cp .env.example "$tmpdir/.env.example"
+            [ -f LICENSE ] && cp LICENSE "$tmpdir/LICENSE" || true
+            cd "$tmpdir"
+            zip -r "../release/${platform}.zip" .
+            cd ..
+            rm -rf "$tmpdir"
+          done
+          ls -lh release/
+
+      - name: 创建 GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
+          files: release/*
           generate_release_notes: true
           body: |
-            ## codex-console
+            ## OpenAI 账号管理系统 v2
 
-            ### Download
-            | Platform | File |
+            ### 下载说明
+            | 平台 | 文件 |
             |------|------|
-            | Windows x64 | `codex-console-windows-x64.exe` |
-            | Linux ARM64 | `codex-console-linux-arm64` |
-            | Linux x64 | `codex-console-linux-x64` |
-            | macOS ARM64 | `codex-console-macos-arm64` |
-            | macOS AMD64 | `codex-console-macos-amd64` |
+            | Windows x64 | `codex-register-v2-windows-x64.exe` |
+            | Linux x64 | `codex-register-v2-linux-x64` |
+            | macOS ARM64 | `codex-register-v2-macos-arm64` |
 
-            ### Usage
+            ### 使用方法
             ```bash
-            # Linux/macOS may need execute permission first
-            chmod +x codex-console-*
+            # Linux/macOS 需要先赋予执行权限
+            chmod +x codex-register-*
 
-            # Start Web UI
-            ./codex-console
+            # 启动 Web UI
+            ./codex-register
 
-            # Custom port
-            ./codex-console --port 8080
+            # 指定端口
+            ./codex-register --port 8080
+            
+            # 调试模式（热重载）
+            ./codex-register --debug
 
-            # Debug mode
-            ./codex-console --debug
-
-            # Set Web UI password
-            ./codex-console --access-password mypassword
+            # 设置 Web UI 访问密钥
+            ./codex-register --access-password mypassword
             ```

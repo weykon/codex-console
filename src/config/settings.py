@@ -10,6 +10,8 @@ from pydantic import BaseModel, field_validator
 from pydantic.types import SecretStr
 from dataclasses import dataclass
 
+from .constants import APP_NAME, APP_VERSION, DEFAULT_WEBUI_HOST, DEFAULT_WEBUI_PORT
+
 
 class SettingCategory(str, Enum):
     """设置分类"""
@@ -42,13 +44,13 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
     # 应用信息
     "app_name": SettingDefinition(
         db_key="app.name",
-        default_value="OpenAI/Codex CLI 自动注册系统",
+        default_value=APP_NAME,
         category=SettingCategory.GENERAL,
         description="应用名称"
     ),
     "app_version": SettingDefinition(
         db_key="app.version",
-        default_value="1.1.2",
+        default_value=APP_VERSION,
         category=SettingCategory.GENERAL,
         description="应用版本"
     ),
@@ -70,13 +72,13 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
     # Web UI 配置
     "webui_host": SettingDefinition(
         db_key="webui.host",
-        default_value="0.0.0.0",
+        default_value=DEFAULT_WEBUI_HOST,
         category=SettingCategory.WEBUI,
         description="Web UI 监听地址"
     ),
     "webui_port": SettingDefinition(
         db_key="webui.port",
-        default_value=8000,
+        default_value=DEFAULT_WEBUI_PORT,
         category=SettingCategory.WEBUI,
         description="Web UI 监听端口"
     ),
@@ -93,66 +95,6 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
         category=SettingCategory.WEBUI,
         description="Web UI 访问密码",
         is_secret=True
-    ),
-    "auto_quick_refresh_enabled": SettingDefinition(
-        db_key="webui.auto_quick_refresh.enabled",
-        default_value=False,
-        category=SettingCategory.WEBUI,
-        description="是否启用账号管理自动一键刷新"
-    ),
-    "auto_quick_refresh_interval_minutes": SettingDefinition(
-        db_key="webui.auto_quick_refresh.interval_minutes",
-        default_value=30,
-        category=SettingCategory.WEBUI,
-        description="账号管理自动一键刷新间隔（分钟）"
-    ),
-    "auto_quick_refresh_retry_limit": SettingDefinition(
-        db_key="webui.auto_quick_refresh.retry_limit",
-        default_value=2,
-        category=SettingCategory.WEBUI,
-        description="账号管理自动一键刷新失败重试次数"
-    ),
-    "selfcheck_auto_enabled": SettingDefinition(
-        db_key="webui.selfcheck.auto_enabled",
-        default_value=False,
-        category=SettingCategory.WEBUI,
-        description="是否启用系统自检定时巡检"
-    ),
-    "selfcheck_interval_minutes": SettingDefinition(
-        db_key="webui.selfcheck.interval_minutes",
-        default_value=15,
-        category=SettingCategory.WEBUI,
-        description="系统自检定时巡检间隔（分钟）"
-    ),
-    "selfcheck_mode": SettingDefinition(
-        db_key="webui.selfcheck.mode",
-        default_value="quick",
-        category=SettingCategory.WEBUI,
-        description="系统自检定时巡检模式（quick/full）"
-    ),
-    "circuit_breaker_enabled": SettingDefinition(
-        db_key="runtime.circuit_breaker.enabled",
-        default_value=True,
-        category=SettingCategory.WEBUI,
-        description="是否启用失败熔断器"
-    ),
-    "circuit_breaker_failure_threshold": SettingDefinition(
-        db_key="runtime.circuit_breaker.failure_threshold",
-        default_value=5,
-        category=SettingCategory.WEBUI,
-        description="熔断触发连续失败次数阈值"
-    ),
-    "circuit_breaker_cooldown_seconds": SettingDefinition(
-        db_key="runtime.circuit_breaker.cooldown_seconds",
-        default_value=180,
-        category=SettingCategory.WEBUI,
-        description="熔断冷却时长（秒）"
-    ),
-    "circuit_breaker_probe_interval_seconds": SettingDefinition(
-        db_key="runtime.circuit_breaker.probe_interval_seconds",
-        default_value=30,
-        category=SettingCategory.WEBUI,
-        description="冷却结束后自动探活最小间隔（秒）"
     ),
 
     # 日志配置
@@ -308,83 +250,11 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
         category=SettingCategory.REGISTRATION,
         description="注册间隔最大值（秒）"
     ),
-    "registration_entry_flow": SettingDefinition(
-        db_key="registration.entry_flow",
-        default_value="native",
-        category=SettingCategory.REGISTRATION,
-        description="注册入口链路（native=原本链路, abcard=ABCard入口链路；Outlook 邮箱会自动走 Outlook 链路）"
-    ),
 
     # 邮箱服务配置
-    "registration_auto_enabled": SettingDefinition(
-        db_key="registration.auto.enabled",
-        default_value=False,
-        category=SettingCategory.REGISTRATION,
-        description="是否启用自动注册补货"
-    ),
-    "registration_auto_check_interval": SettingDefinition(
-        db_key="registration.auto.check_interval",
-        default_value=60,
-        category=SettingCategory.REGISTRATION,
-        description="自动注册库存检查间隔（秒）"
-    ),
-    "registration_auto_min_ready_auth_files": SettingDefinition(
-        db_key="registration.auto.min_ready_auth_files",
-        default_value=1,
-        category=SettingCategory.REGISTRATION,
-        description="自动注册保底可用认证文件数量"
-    ),
-    "registration_auto_email_service_type": SettingDefinition(
-        db_key="registration.auto.email_service_type",
-        default_value="tempmail",
-        category=SettingCategory.REGISTRATION,
-        description="自动注册使用的邮箱服务类型"
-    ),
-    "registration_auto_email_service_id": SettingDefinition(
-        db_key="registration.auto.email_service_id",
-        default_value=0,
-        category=SettingCategory.REGISTRATION,
-        description="自动注册绑定的邮箱服务 ID（0 表示自动选择）"
-    ),
-    "registration_auto_proxy": SettingDefinition(
-        db_key="registration.auto.proxy",
-        default_value="",
-        category=SettingCategory.REGISTRATION,
-        description="自动注册固定代理地址（留空则沿用系统策略）"
-    ),
-    "registration_auto_interval_min": SettingDefinition(
-        db_key="registration.auto.interval_min",
-        default_value=5,
-        category=SettingCategory.REGISTRATION,
-        description="自动注册批量任务最小启动间隔（秒）"
-    ),
-    "registration_auto_interval_max": SettingDefinition(
-        db_key="registration.auto.interval_max",
-        default_value=30,
-        category=SettingCategory.REGISTRATION,
-        description="自动注册批量任务最大启动间隔（秒）"
-    ),
-    "registration_auto_concurrency": SettingDefinition(
-        db_key="registration.auto.concurrency",
-        default_value=1,
-        category=SettingCategory.REGISTRATION,
-        description="自动注册批量任务并发数"
-    ),
-    "registration_auto_mode": SettingDefinition(
-        db_key="registration.auto.mode",
-        default_value="pipeline",
-        category=SettingCategory.REGISTRATION,
-        description="自动注册批量任务模式"
-    ),
-    "registration_auto_cpa_service_id": SettingDefinition(
-        db_key="registration.auto.cpa_service_id",
-        default_value=0,
-        category=SettingCategory.REGISTRATION,
-        description="自动注册监控并回传的 CPA 服务 ID"
-    ),
     "email_service_priority": SettingDefinition(
         db_key="email.service_priority",
-        default_value={"tempmail": 0, "yyds_mail": 1, "outlook": 2, "moe_mail": 3},
+        default_value={"tempmail": 0, "outlook": 1, "moe_mail": 2},
         category=SettingCategory.EMAIL,
         description="邮箱服务优先级"
     ),
@@ -395,12 +265,6 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
         default_value="https://api.tempmail.lol/v2",
         category=SettingCategory.TEMPMAIL,
         description="Tempmail API 地址"
-    ),
-    "tempmail_enabled": SettingDefinition(
-        db_key="tempmail.enabled",
-        default_value=True,
-        category=SettingCategory.TEMPMAIL,
-        description="是否启用 Tempmail.lol 渠道"
     ),
     "tempmail_timeout": SettingDefinition(
         db_key="tempmail.timeout",
@@ -413,43 +277,6 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
         default_value=3,
         category=SettingCategory.TEMPMAIL,
         description="Tempmail 最大重试次数"
-    ),
-    "yyds_mail_enabled": SettingDefinition(
-        db_key="yyds_mail.enabled",
-        default_value=False,
-        category=SettingCategory.TEMPMAIL,
-        description="是否启用 YYDS Mail 渠道"
-    ),
-    "yyds_mail_base_url": SettingDefinition(
-        db_key="yyds_mail.base_url",
-        default_value="https://maliapi.215.im/v1",
-        category=SettingCategory.TEMPMAIL,
-        description="YYDS Mail API 地址"
-    ),
-    "yyds_mail_api_key": SettingDefinition(
-        db_key="yyds_mail.api_key",
-        default_value="",
-        category=SettingCategory.TEMPMAIL,
-        description="YYDS Mail API Key",
-        is_secret=True
-    ),
-    "yyds_mail_default_domain": SettingDefinition(
-        db_key="yyds_mail.default_domain",
-        default_value="",
-        category=SettingCategory.TEMPMAIL,
-        description="YYDS Mail 默认域名"
-    ),
-    "yyds_mail_timeout": SettingDefinition(
-        db_key="yyds_mail.timeout",
-        default_value=30,
-        category=SettingCategory.TEMPMAIL,
-        description="YYDS Mail 超时时间（秒）"
-    ),
-    "yyds_mail_max_retries": SettingDefinition(
-        db_key="yyds_mail.max_retries",
-        default_value=3,
-        category=SettingCategory.TEMPMAIL,
-        description="YYDS Mail 最大重试次数"
     ),
 
     # 自定义域名邮箱配置
@@ -531,6 +358,18 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
         category=SettingCategory.EMAIL,
         description="验证码轮询间隔（秒）"
     ),
+    "email_code_resend_max_retries": SettingDefinition(
+        db_key="email_code.resend_max_retries",
+        default_value=2,
+        category=SettingCategory.EMAIL,
+        description="收件箱未找到验证码时，最多重新发送验证码的次数"
+    ),
+    "email_code_non_openai_sender_resend_max_retries": SettingDefinition(
+        db_key="email_code.non_openai_sender_resend_max_retries",
+        default_value=1,
+        category=SettingCategory.EMAIL,
+        description="检测到非 OpenAI 发件人干扰时，最多重新发送验证码的次数"
+    ),
 
     # Outlook 配置
     "outlook_provider_priority": SettingDefinition(
@@ -557,6 +396,12 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
         category=SettingCategory.EMAIL,
         description="Outlook OAuth 默认 Client ID"
     ),
+    "outlook_require_recipient_match": SettingDefinition(
+        db_key="outlook.require_recipient_match",
+        default_value=True,
+        category=SettingCategory.EMAIL,
+        description="Outlook 验证码识别时是否校验收件人匹配"
+    ),
 }
 
 # 属性名到数据库键名的映射（用于向后兼容）
@@ -570,47 +415,24 @@ SETTING_TYPES: Dict[str, Type] = {
     "proxy_enabled": bool,
     "proxy_port": int,
     "proxy_dynamic_enabled": bool,
-    "auto_quick_refresh_enabled": bool,
-    "auto_quick_refresh_interval_minutes": int,
-    "auto_quick_refresh_retry_limit": int,
-    "selfcheck_auto_enabled": bool,
-    "selfcheck_interval_minutes": int,
-    "selfcheck_mode": str,
-    "circuit_breaker_enabled": bool,
-    "circuit_breaker_failure_threshold": int,
-    "circuit_breaker_cooldown_seconds": int,
-    "circuit_breaker_probe_interval_seconds": int,
     "registration_max_retries": int,
     "registration_timeout": int,
     "registration_default_password_length": int,
     "registration_sleep_min": int,
     "registration_sleep_max": int,
-    "registration_entry_flow": str,
-    "registration_auto_enabled": bool,
-    "registration_auto_check_interval": int,
-    "registration_auto_min_ready_auth_files": int,
-    "registration_auto_email_service_type": str,
-    "registration_auto_email_service_id": int,
-    "registration_auto_proxy": str,
-    "registration_auto_interval_min": int,
-    "registration_auto_interval_max": int,
-    "registration_auto_concurrency": int,
-    "registration_auto_mode": str,
-    "registration_auto_cpa_service_id": int,
     "email_service_priority": dict,
-    "tempmail_enabled": bool,
     "tempmail_timeout": int,
     "tempmail_max_retries": int,
-    "yyds_mail_enabled": bool,
-    "yyds_mail_timeout": int,
-    "yyds_mail_max_retries": int,
     "tm_enabled": bool,
     "cpa_enabled": bool,
     "email_code_timeout": int,
     "email_code_poll_interval": int,
+    "email_code_resend_max_retries": int,
+    "email_code_non_openai_sender_resend_max_retries": int,
     "outlook_provider_priority": list,
     "outlook_health_failure_threshold": int,
     "outlook_health_disable_duration": int,
+    "outlook_require_recipient_match": bool,
 }
 
 # 需要作为 SecretStr 处理的字段
@@ -785,8 +607,8 @@ class Settings(BaseModel):
     """
 
     # 应用信息
-    app_name: str = "OpenAI/Codex CLI 自动注册系统"
-    app_version: str = "1.1.2"
+    app_name: str = APP_NAME
+    app_version: str = APP_VERSION
     debug: bool = False
 
     # 数据库配置
@@ -809,20 +631,10 @@ class Settings(BaseModel):
         return v
 
     # Web UI 配置
-    webui_host: str = "0.0.0.0"
-    webui_port: int = 8000
+    webui_host: str = DEFAULT_WEBUI_HOST
+    webui_port: int = DEFAULT_WEBUI_PORT
     webui_secret_key: SecretStr = SecretStr("your-secret-key-change-in-production")
     webui_access_password: SecretStr = SecretStr("admin123")
-    auto_quick_refresh_enabled: bool = False
-    auto_quick_refresh_interval_minutes: int = 30
-    auto_quick_refresh_retry_limit: int = 2
-    selfcheck_auto_enabled: bool = False
-    selfcheck_interval_minutes: int = 15
-    selfcheck_mode: str = "quick"
-    circuit_breaker_enabled: bool = True
-    circuit_breaker_failure_threshold: int = 5
-    circuit_breaker_cooldown_seconds: int = 180
-    circuit_breaker_probe_interval_seconds: int = 30
 
     # 日志配置
     log_level: str = "INFO"
@@ -849,58 +661,54 @@ class Settings(BaseModel):
     proxy_dynamic_api_key_header: str = "X-API-Key"
     proxy_dynamic_result_field: str = ""
 
-    @property
-    def proxy_url(self) -> Optional[str]:
-        """获取完整的代理 URL"""
-        if not self.proxy_enabled:
-            return None
+    def get_proxy_url(self, db=None) -> Optional[str]:
+        """获取当前可用的代理 URL（三路优先级）
 
-        if self.proxy_type == "http":
-            scheme = "http"
-        elif self.proxy_type == "socks5":
-            scheme = "socks5"
-        else:
-            return None
+        优先级：动态代理 > 代理池（默认/随机）> 静态代理 > None
 
-        auth = ""
-        if self.proxy_username and self.proxy_password:
-            auth = f"{self.proxy_username}:{self.proxy_password.get_secret_value()}@"
+        Args:
+            db: 可选的数据库 session，传入时检查代理池；不传则跳过代理池
+        """
+        # 1. 动态代理
+        if self.proxy_dynamic_enabled and self.proxy_dynamic_api_url:
+            return self.proxy_dynamic_api_url
 
-        return f"{scheme}://{auth}{self.proxy_host}:{self.proxy_port}"
+        # 2 & 3. 代理池（优先 is_default，否则随机）
+        if db is not None:
+            from src.database import crud
+            proxy = crud.get_random_proxy(db)
+            if proxy is not None:
+                return proxy.proxy_url
 
+        # 4. 静态代理
+        if self.proxy_enabled:
+            if self.proxy_type == "http":
+                scheme = "http"
+            elif self.proxy_type == "socks5":
+                scheme = "socks5"
+            else:
+                return None
+            auth = ""
+            if self.proxy_username and self.proxy_password:
+                auth = f"{self.proxy_username}:{self.proxy_password.get_secret_value()}@"
+            return f"{scheme}://{auth}{self.proxy_host}:{self.proxy_port}"
+
+        # 5. 无可用代理
+        return None
     # 注册配置
     registration_max_retries: int = 3
     registration_timeout: int = 120
     registration_default_password_length: int = 12
     registration_sleep_min: int = 5
     registration_sleep_max: int = 30
-    registration_entry_flow: str = "native"
-    registration_auto_enabled: bool = False
-    registration_auto_check_interval: int = 60
-    registration_auto_min_ready_auth_files: int = 1
-    registration_auto_email_service_type: str = "tempmail"
-    registration_auto_email_service_id: int = 0
-    registration_auto_proxy: str = ""
-    registration_auto_interval_min: int = 5
-    registration_auto_interval_max: int = 30
-    registration_auto_concurrency: int = 1
-    registration_auto_mode: str = "pipeline"
-    registration_auto_cpa_service_id: int = 0
 
     # 邮箱服务配置
-    email_service_priority: Dict[str, int] = {"tempmail": 0, "yyds_mail": 1, "outlook": 2, "moe_mail": 3}
+    email_service_priority: Dict[str, int] = {"tempmail": 0, "outlook": 1, "moe_mail": 2}
 
     # Tempmail.lol 配置
     tempmail_base_url: str = "https://api.tempmail.lol/v2"
-    tempmail_enabled: bool = True
     tempmail_timeout: int = 30
     tempmail_max_retries: int = 3
-    yyds_mail_enabled: bool = False
-    yyds_mail_base_url: str = "https://maliapi.215.im/v1"
-    yyds_mail_api_key: Optional[SecretStr] = None
-    yyds_mail_default_domain: str = ""
-    yyds_mail_timeout: int = 30
-    yyds_mail_max_retries: int = 3
 
     # 自定义域名邮箱配置
     custom_domain_base_url: str = ""
@@ -922,12 +730,15 @@ class Settings(BaseModel):
     # 验证码配置
     email_code_timeout: int = 120
     email_code_poll_interval: int = 3
+    email_code_resend_max_retries: int = 2
+    email_code_non_openai_sender_resend_max_retries: int = 1
 
     # Outlook 配置
     outlook_provider_priority: List[str] = ["imap_old", "imap_new", "graph_api"]
     outlook_health_failure_threshold: int = 5
     outlook_health_disable_duration: int = 60
     outlook_default_client_id: str = "24d9a0ed-8787-4584-883c-2fd79308940a"
+    outlook_require_recipient_match: bool = True
 
 
 # 全局配置实例

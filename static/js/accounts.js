@@ -9,218 +9,10 @@ let pageSize = 20;
 let totalAccounts = 0;
 let selectedAccounts = new Set();
 let isLoading = false;
-let isBatchRefreshing = false;
-let isBatchValidating = false;
-let isBatchCheckingSubscription = false;
-let isOverviewRefreshing = false;
-let isQuickWorkflowRunning = false;
-let quickWorkflowStepLabel = '';
 let selectAllPages = false;  // 是否选中了全部页
-let currentFilters = { status: '', email_service: '', role_tag: '', search: '' };  // 当前筛选条件
-let autoQuickRefreshSettings = null;
-let autoQuickRefreshFormDirty = false;
-let isTaskPausing = false;
-let isTaskResuming = false;
-let pendingAccountListRefresh = null;
-let pendingAccountStatsRefresh = null;
-const TASK_TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled']);
-const activeBatchTasks = {
-    refresh: null,
-    validate: null,
-    subscription: null,
-    overview: null,
-};
-
-function sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function delay(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function normalizeTaskState(taskRef = {}) {
-    const status = String(taskRef?.status || '').trim().toLowerCase();
-    const paused = Boolean(taskRef?.paused) || status === 'paused';
-    return { ...taskRef, status, paused };
-}
-
-function trackBatchTask(key, taskRef = null) {
-    if (!Object.prototype.hasOwnProperty.call(activeBatchTasks, key)) return;
-    activeBatchTasks[key] = taskRef ? normalizeTaskState(taskRef) : null;
-    updateBatchButtons();
-}
-
-function patchBatchTask(key, patch = {}) {
-    if (!Object.prototype.hasOwnProperty.call(activeBatchTasks, key)) return;
-    const current = activeBatchTasks[key];
-    if (!current) return;
-    activeBatchTasks[key] = normalizeTaskState({ ...current, ...(patch || {}) });
-    updateBatchButtons();
-}
-
-function getRunningBatchTasks() {
-    return Object.entries(activeBatchTasks)
-        .map(([key, task]) => ({ key, ...(task || {}) }))
-        .filter((task) => task.id && !TASK_TERMINAL_STATUSES.has(String(task.status || '').toLowerCase()));
-}
-
-function getPausableBatchTasks() {
-    return getRunningBatchTasks().filter((task) => !Boolean(task.paused));
-}
-
-function getResumableBatchTasks() {
-    return getRunningBatchTasks().filter((task) => Boolean(task.paused));
-}
-
-async function watchDomainTask(fetchTask, onUpdate, maxWaitMs = 20 * 60 * 1000, options = {}) {
-    const startedAt = Date.now();
-    const poller = createAdaptivePoller({
-        baseIntervalMs: Number(options.baseIntervalMs || 1200),
-        maxIntervalMs: Number(options.maxIntervalMs || 12000),
-    });
-    let lastError = null;
-
-    while (Date.now() - startedAt < maxWaitMs) {
-        try {
-            const task = await fetchTask();
-            poller.recordSuccess();
-
-            if (typeof onUpdate === 'function') {
-                onUpdate(task);
-            }
-
-            const status = String(task?.status || '').toLowerCase();
-            if (TASK_TERMINAL_STATUSES.has(status)) {
-                return task;
-            }
-        } catch (error) {
-            lastError = error;
-            const statusCode = Number(error?.response?.status || 0);
-            if (statusCode === 404) {
-                throw error;
-            }
-            poller.recordError();
-        }
-
-        await sleep(poller.nextDelay({ forceSlow: !api.networkOnline }));
-    }
-
-    if (lastError && lastError.message) {
-        throw new Error(`任务等待超时: ${lastError.message}`);
-    }
-    throw new Error('任务等待超时，请稍后刷新查看结果');
-}
-
-async function watchAccountTask(taskId, onUpdate, maxWaitMs = 20 * 60 * 1000) {
-    return watchDomainTask(
-        () => api.get(`/accounts/tasks/${taskId}`, {
-            requestKey: `accounts:task:${taskId}`,
-            cancelPrevious: true,
-            retry: 0,
-            timeoutMs: 30000,
-            silentNetworkError: true,
-            silentTimeoutError: true,
-            priority: 'low',
-        }),
-        onUpdate,
-        maxWaitMs,
-        { baseIntervalMs: 1200, maxIntervalMs: 12000 },
-    );
-}
-
-async function watchPaymentTask(taskId, onUpdate, maxWaitMs = 20 * 60 * 1000) {
-    return watchDomainTask(
-        () => api.get(`/payment/ops/tasks/${taskId}`, {
-            requestKey: `payment:task:${taskId}`,
-            cancelPrevious: true,
-            retry: 0,
-            timeoutMs: 30000,
-            silentNetworkError: true,
-            silentTimeoutError: true,
-            priority: 'low',
-        }),
-        onUpdate,
-        maxWaitMs,
-        { baseIntervalMs: 1200, maxIntervalMs: 12000 },
-    );
-}
-
-function replaceAccountRowStatus(accountId, nextStatus) {
-    const normalizedId = Number(accountId || 0);
-    const normalizedStatus = String(nextStatus || '').trim().toLowerCase();
-    if (normalizedId <= 0 || !normalizedStatus) return false;
-
-    const row = elements.table?.querySelector(`tr[data-id="${normalizedId}"]`);
-    if (!row) return false;
-
-    const statusCell = row.children?.[5];
-    if (!statusCell) return false;
-
-    statusCell.innerHTML = renderAccountStatusDot(normalizedStatus, normalizedId);
-    return true;
-}
-
-function collectValidatedStatusMap(taskOrResult) {
-    const detailRows = Array.isArray(taskOrResult?.details)
-        ? taskOrResult.details
-        : (Array.isArray(taskOrResult?.result?.details) ? taskOrResult.result.details : []);
-    const statusMap = new Map();
-
-    detailRows.forEach((detail) => {
-        const accountId = Number(detail?.id || 0);
-        const status = String(detail?.status || '').trim().toLowerCase();
-        if (accountId > 0 && status) {
-            statusMap.set(accountId, status);
-        }
-    });
-
-    return statusMap;
-}
-
-function applyValidatedStatuses(taskOrResult) {
-    const statusMap = collectValidatedStatusMap(taskOrResult);
-    let updatedCount = 0;
-    statusMap.forEach((status, accountId) => {
-        if (replaceAccountRowStatus(accountId, status)) {
-            updatedCount += 1;
-        }
-    });
-    return updatedCount;
-}
-
-async function refreshAccountsView(options = {}) {
-    const refreshStats = options.refreshStats !== false;
-    const refreshList = options.refreshList !== false;
-    const settleDelayMs = Math.max(0, Number(options.settleDelayMs || 0));
-    const tasks = [];
-
-    if (settleDelayMs > 0) {
-        await delay(settleDelayMs);
-    }
-
-    if (refreshStats) {
-        if (!pendingAccountStatsRefresh) {
-            pendingAccountStatsRefresh = loadStats().finally(() => {
-                pendingAccountStatsRefresh = null;
-            });
-        }
-        tasks.push(pendingAccountStatsRefresh);
-    }
-
-    if (refreshList) {
-        if (!pendingAccountListRefresh) {
-            pendingAccountListRefresh = loadAccounts().finally(() => {
-                pendingAccountListRefresh = null;
-            });
-        }
-        tasks.push(pendingAccountListRefresh);
-    }
-
-    if (tasks.length > 0) {
-        await Promise.all(tasks);
-    }
-}
+let currentFilters = { status: '', email_service: '', search: '' };  // 当前筛选条件
+const refreshingAccountIds = new Set();
+let isBatchValidating = false;
 
 // DOM 元素
 const elements = {
@@ -229,49 +21,32 @@ const elements = {
     activeAccounts: document.getElementById('active-accounts'),
     expiredAccounts: document.getElementById('expired-accounts'),
     failedAccounts: document.getElementById('failed-accounts'),
-    motherAccounts: document.getElementById('mother-accounts'),
-    childAccounts: document.getElementById('child-accounts'),
     filterStatus: document.getElementById('filter-status'),
     filterService: document.getElementById('filter-service'),
-    filterRoleTag: document.getElementById('filter-role-tag'),
     searchInput: document.getElementById('search-input'),
-    quickRefreshBtn: document.getElementById('quick-refresh-btn'),
-    autoQuickRefreshSettingsBtn: document.getElementById('auto-quick-refresh-settings-btn'),
+    refreshBtn: document.getElementById('refresh-btn'),
     batchRefreshBtn: document.getElementById('batch-refresh-btn'),
     batchValidateBtn: document.getElementById('batch-validate-btn'),
     batchUploadBtn: document.getElementById('batch-upload-btn'),
     batchCheckSubBtn: document.getElementById('batch-check-sub-btn'),
-    batchPauseBtn: document.getElementById('batch-pause-btn'),
-    batchResumeBtn: document.getElementById('batch-resume-btn'),
     batchDeleteBtn: document.getElementById('batch-delete-btn'),
     exportBtn: document.getElementById('export-btn'),
     exportMenu: document.getElementById('export-menu'),
     selectAll: document.getElementById('select-all'),
+    firstPage: document.getElementById('first-page'),
     prevPage: document.getElementById('prev-page'),
     nextPage: document.getElementById('next-page'),
+    lastPage: document.getElementById('last-page'),
     pageInfo: document.getElementById('page-info'),
     detailModal: document.getElementById('detail-modal'),
     modalBody: document.getElementById('modal-body'),
-    closeModal: document.getElementById('close-modal'),
-    autoQuickRefreshModal: document.getElementById('auto-quick-refresh-modal'),
-    autoQuickRefreshEnabled: document.getElementById('auto-quick-refresh-enabled'),
-    autoQuickRefreshInterval: document.getElementById('auto-quick-refresh-interval'),
-    autoQuickRefreshRetry: document.getElementById('auto-quick-refresh-retry'),
-    autoQuickRefreshRunNow: document.getElementById('auto-quick-refresh-run-now'),
-    autoQuickRefreshRuntime: document.getElementById('auto-quick-refresh-runtime'),
-    closeAutoQuickRefreshModalBtn: document.getElementById('close-auto-quick-refresh-modal'),
-    cancelAutoQuickRefreshBtn: document.getElementById('cancel-auto-quick-refresh-btn'),
-    saveAutoQuickRefreshBtn: document.getElementById('save-auto-quick-refresh-btn'),
+    closeModal: document.getElementById('close-modal')
 };
 
 // 初始化
 document.addEventListener('DOMContentLoaded', () => {
     loadStats();
     loadAccounts();
-    loadAutoQuickRefreshSettings({ silent: true });
-    setInterval(() => {
-        loadAutoQuickRefreshSettings({ silent: true });
-    }, 30000);
     initEventListeners();
     updateBatchButtons();  // 初始化按钮状态
     renderSelectAllBanner();
@@ -287,12 +62,6 @@ function initEventListeners() {
     });
 
     elements.filterService.addEventListener('change', () => {
-        currentPage = 1;
-        resetSelectAllPages();
-        loadAccounts();
-    });
-
-    elements.filterRoleTag?.addEventListener('change', () => {
         currentPage = 1;
         resetSelectAllPages();
         loadAccounts();
@@ -315,17 +84,21 @@ function initEventListeners() {
         }
     });
 
+    // 刷新
+    elements.refreshBtn.addEventListener('click', () => {
+        loadStats();
+        loadAccounts();
+        toast.info('已刷新');
+    });
+
     // 批量刷新Token
     elements.batchRefreshBtn.addEventListener('click', handleBatchRefresh);
-    elements.autoQuickRefreshSettingsBtn?.addEventListener('click', openAutoQuickRefreshModal);
 
     // 批量验证Token
     elements.batchValidateBtn.addEventListener('click', handleBatchValidate);
 
     // 批量检测订阅
     elements.batchCheckSubBtn.addEventListener('click', handleBatchCheckSubscription);
-    elements.batchPauseBtn?.addEventListener('click', pauseActiveBatchTasks);
-    elements.batchResumeBtn?.addEventListener('click', resumeActiveBatchTasks);
 
     // 上传下拉菜单
     const uploadMenu = document.getElementById('upload-menu');
@@ -336,9 +109,28 @@ function initEventListeners() {
     document.getElementById('batch-upload-cpa-item').addEventListener('click', (e) => { e.preventDefault(); uploadMenu.classList.remove('active'); handleBatchUploadCpa(); });
     document.getElementById('batch-upload-sub2api-item').addEventListener('click', (e) => { e.preventDefault(); uploadMenu.classList.remove('active'); handleBatchUploadSub2Api(); });
     document.getElementById('batch-upload-tm-item').addEventListener('click', (e) => { e.preventDefault(); uploadMenu.classList.remove('active'); handleBatchUploadTm(); });
+    document.getElementById('batch-upload-newapi-item').addEventListener('click', (e) => { e.preventDefault(); uploadMenu.classList.remove('active'); handleBatchUploadNewapi(); });
 
     // 批量删除
     elements.batchDeleteBtn.addEventListener('click', handleBatchDelete);
+
+    // Codex Auth 登录
+    const codexAuthBtn = document.getElementById('codex-auth-login-btn');
+    if (codexAuthBtn) {
+        codexAuthBtn.addEventListener('click', handleCodexAuthLogin);
+    }
+    const closeCodexAuthModal = document.getElementById('close-codex-auth-modal');
+    if (closeCodexAuthModal) {
+        closeCodexAuthModal.addEventListener('click', () => {
+            document.getElementById('codex-auth-modal').classList.remove('active');
+        });
+    }
+    const closeCodexAuthModalBtn = document.getElementById('close-codex-auth-modal-btn');
+    if (closeCodexAuthModalBtn) {
+        closeCodexAuthModalBtn.addEventListener('click', () => {
+            document.getElementById('codex-auth-modal').classList.remove('active');
+        });
+    }
 
     // 全选（当前页）
     elements.selectAll.addEventListener('change', (e) => {
@@ -360,6 +152,13 @@ function initEventListeners() {
     });
 
     // 分页
+    elements.firstPage.addEventListener('click', () => {
+        if (currentPage > 1 && !isLoading) {
+            currentPage = 1;
+            loadAccounts();
+        }
+    });
+
     elements.prevPage.addEventListener('click', () => {
         if (currentPage > 1 && !isLoading) {
             currentPage--;
@@ -371,6 +170,14 @@ function initEventListeners() {
         const totalPages = Math.ceil(totalAccounts / pageSize);
         if (currentPage < totalPages && !isLoading) {
             currentPage++;
+            loadAccounts();
+        }
+    });
+
+    elements.lastPage.addEventListener('click', () => {
+        const totalPages = Math.ceil(totalAccounts / pageSize);
+        if (currentPage < totalPages && !isLoading) {
+            currentPage = totalPages;
             loadAccounts();
         }
     });
@@ -399,28 +206,6 @@ function initEventListeners() {
         }
     });
 
-    elements.closeAutoQuickRefreshModalBtn?.addEventListener('click', closeAutoQuickRefreshModal);
-    elements.cancelAutoQuickRefreshBtn?.addEventListener('click', closeAutoQuickRefreshModal);
-    elements.saveAutoQuickRefreshBtn?.addEventListener('click', saveAutoQuickRefreshSettings);
-    [
-        elements.autoQuickRefreshEnabled,
-        elements.autoQuickRefreshInterval,
-        elements.autoQuickRefreshRetry,
-        elements.autoQuickRefreshRunNow,
-    ].forEach((input) => {
-        input?.addEventListener('change', () => {
-            autoQuickRefreshFormDirty = true;
-        });
-        input?.addEventListener('input', () => {
-            autoQuickRefreshFormDirty = true;
-        });
-    });
-    elements.autoQuickRefreshModal?.addEventListener('click', (e) => {
-        if (e.target === elements.autoQuickRefreshModal) {
-            closeAutoQuickRefreshModal();
-        }
-    });
-
     // 点击其他地方关闭下拉菜单
     document.addEventListener('click', () => {
         elements.exportMenu.classList.remove('active');
@@ -429,186 +214,15 @@ function initEventListeners() {
     });
 }
 
-function formatSchedulerTime(value) {
-    if (!value) return '-';
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return '-';
-    return date.toLocaleString('zh-CN');
-}
-
-function renderAutoQuickRefreshRuntime(runtime) {
-    const info = runtime || {};
-    const logs = Array.isArray(info.logs) ? info.logs : [];
-    if (logs.length === 0) {
-        return `
-            <div class="auto-quick-refresh-log-title">执行日志</div>
-            <div class="auto-quick-refresh-log-empty">暂无执行日志</div>
-        `;
-    }
-    const rows = logs
-        .slice(-20)
-        .reverse()
-        .map((item) => {
-            const levelRaw = String(item?.level || 'info').trim().toLowerCase();
-            const level = ['success', 'warning', 'error', 'info'].includes(levelRaw) ? levelRaw : 'info';
-            const timeText = formatSchedulerTime(item?.time);
-            const message = String(item?.message || '').trim() || '-';
-            return `
-                <div class="auto-quick-refresh-log-item level-${level}">
-                    <span class="log-time">${escapeHtml(timeText)}</span>
-                    <span class="log-level">${escapeHtml(level)}</span>
-                    <span class="log-message">${escapeHtml(message)}</span>
-                </div>
-            `;
-        })
-        .join('');
-    return `
-        <div class="auto-quick-refresh-log-title">执行日志</div>
-        <div class="auto-quick-refresh-log-list">${rows}</div>
-    `;
-}
-
-function updateAutoQuickRefreshButton() {
-    const btn = elements.autoQuickRefreshSettingsBtn;
-    if (!btn) return;
-    const enabled = Boolean(autoQuickRefreshSettings?.enabled);
-    const interval = Number(autoQuickRefreshSettings?.interval_minutes || 0);
-    const runtime = autoQuickRefreshSettings?.runtime || {};
-    if (runtime.running) {
-        btn.textContent = '⚙️ 运行中';
-        btn.title = '定时自动一键刷新正在执行';
-        return;
-    }
-    if (enabled && interval > 0) {
-        btn.textContent = `⚙️ 定时(${interval}m)`;
-        btn.title = `定时自动一键刷新已启用，每 ${interval} 分钟执行`;
-        return;
-    }
-    btn.textContent = '⚙️ 定时';
-    btn.title = '定时自动一键刷新设置';
-}
-
-function fillAutoQuickRefreshForm(options = {}) {
-    if (!autoQuickRefreshSettings) return;
-    let syncSettings = options.syncSettings !== false;
-    const syncRuntime = options.syncRuntime !== false;
-    const force = options.force === true;
-    const modalActive = elements.autoQuickRefreshModal?.classList.contains('active');
-    if (!force && modalActive && autoQuickRefreshFormDirty) {
-        syncSettings = false;
-    }
-
-    if (syncSettings && elements.autoQuickRefreshEnabled) {
-        elements.autoQuickRefreshEnabled.checked = Boolean(autoQuickRefreshSettings.enabled);
-    }
-    if (syncSettings && elements.autoQuickRefreshInterval) {
-        elements.autoQuickRefreshInterval.value = String(autoQuickRefreshSettings.interval_minutes || 30);
-    }
-    if (syncSettings && elements.autoQuickRefreshRetry) {
-        elements.autoQuickRefreshRetry.value = String(autoQuickRefreshSettings.retry_limit || 2);
-    }
-    if (syncSettings && elements.autoQuickRefreshRunNow) {
-        elements.autoQuickRefreshRunNow.checked = false;
-    }
-    if (syncRuntime && elements.autoQuickRefreshRuntime) {
-        elements.autoQuickRefreshRuntime.innerHTML = renderAutoQuickRefreshRuntime(autoQuickRefreshSettings.runtime || {});
-    }
-}
-
-async function loadAutoQuickRefreshSettings(options = {}) {
-    const silent = options.silent === true;
-    try {
-        const data = await api.get('/settings/auto-quick-refresh', {
-            requestKey: 'settings:auto-quick-refresh',
-            cancelPrevious: true,
-            retry: 1,
-            timeoutMs: 15000,
-        });
-        autoQuickRefreshSettings = data || {};
-        updateAutoQuickRefreshButton();
-        if (elements.autoQuickRefreshModal?.classList.contains('active')) {
-            fillAutoQuickRefreshForm({
-                syncSettings: !autoQuickRefreshFormDirty,
-                syncRuntime: true,
-            });
-        }
-    } catch (error) {
-        if (!silent) {
-            toast.error('加载定时设置失败: ' + error.message);
-        }
-    }
-}
-
-async function openAutoQuickRefreshModal() {
-    if (!elements.autoQuickRefreshModal) return;
-    await loadAutoQuickRefreshSettings({ silent: false });
-    autoQuickRefreshFormDirty = false;
-    fillAutoQuickRefreshForm({ force: true, syncSettings: true, syncRuntime: true });
-    elements.autoQuickRefreshModal.classList.add('active');
-}
-
-function closeAutoQuickRefreshModal() {
-    autoQuickRefreshFormDirty = false;
-    elements.autoQuickRefreshModal?.classList.remove('active');
-}
-
-async function saveAutoQuickRefreshSettings() {
-    if (!elements.saveAutoQuickRefreshBtn) return;
-    const enabled = Boolean(elements.autoQuickRefreshEnabled?.checked);
-    const interval = Math.max(5, Math.min(1440, Number(elements.autoQuickRefreshInterval?.value || 30)));
-    const retryLimit = Math.max(0, Math.min(5, Number(elements.autoQuickRefreshRetry?.value || 2)));
-    const runNow = enabled && Boolean(elements.autoQuickRefreshRunNow?.checked);
-
-    const btn = elements.saveAutoQuickRefreshBtn;
-    const originalText = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = '保存中...';
-
-    try {
-        await api.post('/settings/auto-quick-refresh', {
-            enabled,
-            interval_minutes: interval,
-            retry_limit: retryLimit,
-            run_now: runNow,
-        }, {
-            requestKey: 'settings:auto-quick-refresh:update',
-            cancelPrevious: true,
-            timeoutMs: 20000,
-            retry: 0,
-        });
-        toast.success(runNow ? '设置已保存，已触发一次立即执行' : '定时自动一键刷新设置已保存');
-        autoQuickRefreshFormDirty = false;
-        closeAutoQuickRefreshModal();
-        await loadAutoQuickRefreshSettings({ silent: true });
-    } catch (error) {
-        toast.error('保存定时设置失败: ' + error.message);
-    } finally {
-        btn.disabled = false;
-        btn.textContent = originalText;
-    }
-}
-
 // 加载统计信息
 async function loadStats() {
     try {
-        const data = await api.get('/accounts/stats/summary', {
-            requestKey: 'accounts:stats',
-            cancelPrevious: true,
-            retry: 1,
-        });
+        const data = await api.get('/accounts/stats/summary');
 
         elements.totalAccounts.textContent = format.number(data.total || 0);
         elements.activeAccounts.textContent = format.number(data.by_status?.active || 0);
         elements.expiredAccounts.textContent = format.number(data.by_status?.expired || 0);
         elements.failedAccounts.textContent = format.number(data.by_status?.failed || 0);
-        const parentCount = Number(data.tagged_role_counts?.parent ?? data.by_role_tag?.parent ?? 0);
-        const childCount = Number(data.tagged_role_counts?.child ?? data.by_role_tag?.child ?? 0);
-        if (elements.motherAccounts) {
-            elements.motherAccounts.textContent = format.number(parentCount);
-        }
-        if (elements.childAccounts) {
-            elements.childAccounts.textContent = format.number(childCount);
-        }
 
         // 添加动画效果
         animateValue(elements.totalAccounts, data.total || 0);
@@ -645,29 +259,29 @@ async function loadAccounts() {
     `;
 
     // 记录当前筛选条件
-    currentFilters = filterProtocol.normalize({
-        status: elements.filterStatus.value,
-        email_service: elements.filterService.value,
-        role_tag: elements.filterRoleTag?.value || '',
-        search: elements.searchInput.value.trim(),
-    });
+    currentFilters.status = elements.filterStatus.value;
+    currentFilters.email_service = elements.filterService.value;
+    currentFilters.search = elements.searchInput.value.trim();
 
-    const params = filterProtocol.toQuery({
+    const params = new URLSearchParams({
         page: currentPage,
         page_size: pageSize,
-        status: currentFilters.status,
-        email_service: currentFilters.email_service,
-        role_tag: currentFilters.role_tag,
-        search: currentFilters.search,
     });
-    const queryText = params.toString();
+
+    if (currentFilters.status) {
+        params.append('status', currentFilters.status);
+    }
+
+    if (currentFilters.email_service) {
+        params.append('email_service', currentFilters.email_service);
+    }
+
+    if (currentFilters.search) {
+        params.append('search', currentFilters.search);
+    }
 
     try {
-        const data = await api.get(`/accounts${queryText ? `?${queryText}` : ''}`, {
-            requestKey: 'accounts:list',
-            cancelPrevious: true,
-            retry: 1,
-        });
+        const data = await api.get(`/accounts?${params}`);
         totalAccounts = data.total;
         renderAccounts(data.accounts);
         updatePagination();
@@ -686,7 +300,6 @@ async function loadAccounts() {
         `;
     } finally {
         isLoading = false;
-        updateBatchButtons();
     }
 }
 
@@ -717,7 +330,6 @@ function renderAccounts(accounts) {
             <td>
                 <span style="display:inline-flex;align-items:center;gap:4px;">
                     <span class="email-cell" title="${escapeHtml(account.email)}">${escapeHtml(account.email)}</span>
-                    ${renderAccountLabelBadge(account.account_label)}
                     <button class="btn-copy-icon copy-email-btn" data-email="${escapeHtml(account.email)}" title="复制邮箱">📋</button>
                 </span>
             </td>
@@ -730,29 +342,39 @@ function renderAccounts(accounts) {
                     : '-'}
             </td>
             <td>${getServiceTypeText(account.email_service)}</td>
-            <td>${renderAccountStatusDot(account.status, account.id)}</td>
+            <td>${getStatusIcon(account.status)}</td>
             <td>
                 <div class="cpa-status">
                     ${account.cpa_uploaded
-                        ? `<span class="cpa-status-dot" title="已上传于 ${format.date(account.cpa_uploaded_at)}"></span>`
-                        : ``}
+                        ? `<span class="badge uploaded" title="已上传于 ${format.date(account.cpa_uploaded_at)}">✓</span>`
+                        : `<span class="badge pending">-</span>`}
                 </div>
             </td>
             <td>
-                ${renderSubscriptionStatus(account.subscription_type)}
+                <div class="cpa-status">
+                    ${account.newapi_uploaded
+                        ? `<span class="badge uploaded" title="已上传于 ${format.date(account.newapi_uploaded_at)}">✓</span>`
+                        : `<span class="badge pending">-</span>`}
+                </div>
+            </td>
+            <td>
+                <div class="cpa-status">
+                    ${account.subscription_type
+                        ? `<span class="badge uploaded" title="${account.subscription_type}">${account.subscription_type}</span>`
+                        : `<span class="badge pending">-</span>`}
+                </div>
             </td>
             <td>${format.date(account.last_refresh) || '-'}</td>
             <td>
                 <div style="display:flex;gap:4px;align-items:center;white-space:nowrap;">
                     <button class="btn btn-secondary btn-sm" onclick="viewAccount(${account.id})">详情</button>
-                    <button class="btn btn-secondary btn-sm" onclick="checkInboxCode(${account.id})">收件箱</button>
                     <div class="dropdown" style="position:relative;">
                         <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();toggleMoreMenu(this)">更多</button>
                         <div class="dropdown-menu" style="min-width:100px;">
                             <a href="#" class="dropdown-item" onclick="event.preventDefault();closeMoreMenu(this);refreshToken(${account.id})">刷新</a>
                             <a href="#" class="dropdown-item" onclick="event.preventDefault();closeMoreMenu(this);uploadAccount(${account.id})">上传</a>
-                            <a href="#" class="dropdown-item" onclick="event.preventDefault();closeMoreMenu(this);markAccountLabel(${account.id}, '${escapeHtml(account.account_label || account.role_tag || 'none')}')">标号</a>
                             <a href="#" class="dropdown-item" onclick="event.preventDefault();closeMoreMenu(this);markSubscription(${account.id})">标记</a>
+                            <a href="#" class="dropdown-item" onclick="event.preventDefault();closeMoreMenu(this);checkInboxCode(${account.id})">收件箱</a>
                         </div>
                     </div>
                     <button class="btn btn-danger btn-sm" onclick="deleteAccount(${account.id}, '${escapeHtml(account.email)}')">删除</button>
@@ -805,48 +427,6 @@ function renderAccounts(accounts) {
     renderSelectAllBanner();
 }
 
-function normalizeSubscriptionType(subscriptionType) {
-    const raw = String(subscriptionType || '').trim().toLowerCase();
-    if (!raw) return '';
-    if (raw.includes('team') || raw.includes('enterprise')) return 'team';
-    if (raw.includes('plus') || raw.includes('pro')) return 'plus';
-    if (raw.includes('free') || raw.includes('basic')) return 'free';
-    return raw;
-}
-
-function hasActiveSubscription(subscriptionType) {
-    const normalized = normalizeSubscriptionType(subscriptionType);
-    return normalized === 'plus' || normalized === 'team';
-}
-
-function renderAccountStatusDot(status, accountId) {
-    const normalized = String(status || '').trim().toLowerCase();
-    const dotClass = ['active', 'expired', 'banned', 'failed'].includes(normalized)
-        ? normalized
-        : 'unknown';
-    const title = getStatusText('account', normalized) || normalized || '-';
-    return `
-        <div class="account-status-cell" title="${escapeHtml(title)}">
-            <span class="account-status-dot ${dotClass}"></span>
-        </div>
-    `;
-}
-
-function renderSubscriptionStatus(subscriptionType) {
-    const normalized = normalizeSubscriptionType(subscriptionType);
-    const variant = (normalized === 'plus' || normalized === 'team') ? normalized : 'free';
-    const label = variant.toUpperCase();
-    const title = variant === 'free'
-        ? '未检测到 Plus/Team 订阅'
-        : `已订阅: ${variant}`;
-    return `
-        <div class="subscription-status ${variant}" title="${escapeHtml(title)}">
-            <span class="dot"></span>
-            <span class="label">${escapeHtml(label)}</span>
-        </div>
-    `;
-}
-
 // 切换密码显示
 function togglePassword(element, password) {
     if (element.dataset.revealed === 'true') {
@@ -864,8 +444,10 @@ function togglePassword(element, password) {
 function updatePagination() {
     const totalPages = Math.max(1, Math.ceil(totalAccounts / pageSize));
 
+    elements.firstPage.disabled = currentPage <= 1;
     elements.prevPage.disabled = currentPage <= 1;
     elements.nextPage.disabled = currentPage >= totalPages;
+    elements.lastPage.disabled = currentPage >= totalPages;
 
     elements.pageInfo.textContent = `第 ${currentPage} 页 / 共 ${totalPages} 页`;
 }
@@ -880,16 +462,13 @@ function resetSelectAllPages() {
 
 // 构建批量请求体（含 select_all 和筛选参数）
 function buildBatchPayload(extraFields = {}) {
-    const filterPayload = filterProtocol.toPayload({
-        status_filter: currentFilters.status,
-        email_service_filter: currentFilters.email_service,
-        search_filter: currentFilters.search,
-    });
     if (selectAllPages) {
         return {
             ids: [],
             select_all: true,
-            ...filterPayload,
+            status_filter: currentFilters.status || null,
+            email_service_filter: currentFilters.email_service || null,
+            search_filter: currentFilters.search || null,
             ...extraFields
         };
     }
@@ -937,135 +516,37 @@ function selectAllPagesAction() {
     renderSelectAllBanner();
 }
 
-async function pauseActiveBatchTasks() {
-    const tasks = getPausableBatchTasks();
-    if (!tasks.length || isTaskPausing) return;
-
-    isTaskPausing = true;
-    updateBatchButtons();
-    try {
-        const results = await Promise.allSettled(
-            tasks.map((task) => api.post(`/tasks/${task.domain}/${task.id}/pause`, {}, {
-                timeoutMs: 15000,
-                retry: 0,
-                priority: 'high',
-            })),
-        );
-        let successCount = 0;
-        let failedCount = 0;
-        results.forEach((item, index) => {
-            if (item.status === 'fulfilled') {
-                successCount += 1;
-                patchBatchTask(tasks[index].key, {
-                    status: 'paused',
-                    paused: true,
-                    pause_requested: true,
-                });
-                return;
-            }
-            failedCount += 1;
-        });
-        if (successCount > 0) {
-            toast.success(`已暂停 ${successCount} 个任务`);
-        }
-        if (failedCount > 0) {
-            toast.warning(`${failedCount} 个任务暂停失败`);
-        }
-    } catch (error) {
-        toast.error(`暂停任务失败: ${error.message}`);
-    } finally {
-        isTaskPausing = false;
-        updateBatchButtons();
-    }
-}
-
-async function resumeActiveBatchTasks() {
-    const tasks = getResumableBatchTasks();
-    if (!tasks.length || isTaskResuming) return;
-
-    isTaskResuming = true;
-    updateBatchButtons();
-    try {
-        const results = await Promise.allSettled(
-            tasks.map((task) => api.post(`/tasks/${task.domain}/${task.id}/resume`, {}, {
-                timeoutMs: 15000,
-                retry: 0,
-                priority: 'high',
-            })),
-        );
-        let successCount = 0;
-        let failedCount = 0;
-        results.forEach((item, index) => {
-            if (item.status === 'fulfilled') {
-                successCount += 1;
-                patchBatchTask(tasks[index].key, {
-                    status: 'running',
-                    paused: false,
-                    pause_requested: false,
-                });
-                return;
-            }
-            failedCount += 1;
-        });
-        if (successCount > 0) {
-            toast.success(`已继续 ${successCount} 个任务`);
-        }
-        if (failedCount > 0) {
-            toast.warning(`${failedCount} 个任务继续失败`);
-        }
-    } catch (error) {
-        toast.error(`继续任务失败: ${error.message}`);
-    } finally {
-        isTaskResuming = false;
-        updateBatchButtons();
-    }
-}
-
 // 更新批量操作按钮
 function updateBatchButtons() {
     const count = getEffectiveCount();
-    const baseDisabled = count === 0 || isQuickWorkflowRunning || isTaskPausing || isTaskResuming;
-    elements.batchDeleteBtn.disabled = baseDisabled;
-    elements.batchRefreshBtn.disabled = baseDisabled || isBatchRefreshing;
-    elements.batchValidateBtn.disabled = baseDisabled || isBatchValidating;
-    elements.batchUploadBtn.disabled = baseDisabled;
-    elements.batchCheckSubBtn.disabled = baseDisabled || isBatchCheckingSubscription;
+    elements.batchDeleteBtn.disabled = count === 0;
+    elements.batchRefreshBtn.disabled = count === 0;
+    elements.batchValidateBtn.disabled = count === 0;
+    elements.batchUploadBtn.disabled = count === 0;
+    elements.batchCheckSubBtn.disabled = count === 0;
     elements.exportBtn.disabled = count === 0;
-    if (elements.quickRefreshBtn) {
-        elements.quickRefreshBtn.disabled = true;
-        elements.quickRefreshBtn.textContent = '⚡ 一键刷新(已禁用)';
-    }
 
-    elements.batchDeleteBtn.textContent = count > 0 ? `🗑️ 删除 (${count})` : '🗑️ 批量删除';
+    const codexAuthBtn = document.getElementById('codex-auth-login-btn');
+    if (codexAuthBtn) codexAuthBtn.disabled = count === 0;
+
+    elements.batchDeleteBtn.textContent = count > 0 ? `删除 (${count})` : '删除';
     elements.batchRefreshBtn.textContent = count > 0 ? `🔄 刷新 (${count})` : '🔄 刷新Token';
     elements.batchValidateBtn.textContent = count > 0 ? `✅ 验证 (${count})` : '✅ 验证Token';
     elements.batchUploadBtn.textContent = count > 0 ? `☁️ 上传 (${count})` : '☁️ 上传';
     elements.batchCheckSubBtn.textContent = count > 0 ? `🔍 检测 (${count})` : '🔍 检测订阅';
-
-    const pausableCount = getPausableBatchTasks().length;
-    const resumableCount = getResumableBatchTasks().length;
-    if (elements.batchPauseBtn) {
-        elements.batchPauseBtn.disabled = pausableCount === 0 || isTaskPausing;
-        elements.batchPauseBtn.textContent = isTaskPausing
-            ? '⏸️ 暂停中...'
-            : (pausableCount > 0 ? `⏸️ 暂停(${pausableCount})` : '⏸️ 暂停');
-    }
-    if (elements.batchResumeBtn) {
-        elements.batchResumeBtn.disabled = resumableCount === 0 || isTaskResuming;
-        elements.batchResumeBtn.textContent = isTaskResuming
-            ? '▶️ 继续中...'
-            : (resumableCount > 0 ? `▶️ 继续(${resumableCount})` : '▶️ 继续');
-    }
 }
 
 // 刷新单个账号Token
 async function refreshToken(id) {
+    if (refreshingAccountIds.has(id)) {
+        toast.info('该账号正在刷新，请稍候...');
+        return;
+    }
+    refreshingAccountIds.add(id);
+
     try {
         toast.info('正在刷新Token...');
-        const result = await api.post(`/accounts/${id}/refresh`, {}, {
-            timeoutMs: 60000,
-            retry: 0,
-        });
+        const result = await api.post(`/accounts/${id}/refresh`);
 
         if (result.success) {
             toast.success('Token刷新成功');
@@ -1075,446 +556,56 @@ async function refreshToken(id) {
         }
     } catch (error) {
         toast.error('刷新失败: ' + error.message);
-    }
-}
-
-async function validateToken(id) {
-    try {
-        toast.info('正在验证Token...');
-        const result = await api.post(`/accounts/${id}/validate`, {}, {
-            timeoutMs: 30000,
-            retry: 0,
-        });
-
-        const nextStatus = String(result?.status || '').trim().toLowerCase();
-        if (nextStatus) {
-            replaceAccountRowStatus(id, nextStatus);
-        }
-
-        if (result.valid) {
-            toast.success('Token 验证通过');
-        } else {
-            toast.warning(`Token 无效: ${result.error || '未知错误'}`, 5000);
-        }
-
-        await refreshAccountsView({ settleDelayMs: 80 });
-    } catch (error) {
-        toast.error('验证失败: ' + error.message);
-    }
-}
-
-async function runBatchRefreshTask(payload, count, sourceLabel, options = {}) {
-    const showToast = options.showToast !== false;
-    const reloadAfter = options.reloadAfter !== false;
-    const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
-    isBatchRefreshing = true;
-    updateBatchButtons();
-
-    try {
-        const task = await api.post('/accounts/batch-refresh/async', payload, {
-            timeoutMs: 20000,
-            retry: 0,
-            requestKey: 'accounts:batch-refresh',
-            cancelPrevious: true,
-        });
-        const taskId = task?.id;
-        if (!taskId) {
-            throw new Error('任务创建失败：未返回任务 ID');
-        }
-        trackBatchTask('refresh', {
-            id: taskId,
-            domain: 'accounts',
-            status: task?.status || 'pending',
-            paused: Boolean(task?.paused),
-        });
-
-        if (showToast) {
-            toast.info(`${sourceLabel}任务已启动（${taskId.slice(0, 8)}）`);
-        }
-        const finalTask = await watchAccountTask(taskId, (progressTask) => {
-            patchBatchTask('refresh', {
-                status: progressTask?.status || 'running',
-                paused: Boolean(progressTask?.paused),
-                pause_requested: Boolean(progressTask?.pause_requested),
-            });
-            const progress = progressTask?.progress || {};
-            const completed = Number(progress.completed || 0);
-            const total = Number(progress.total || count);
-            const paused = Boolean(progressTask?.paused) || String(progressTask?.status || '').toLowerCase() === 'paused';
-            elements.batchRefreshBtn.textContent = paused ? `已暂停 ${completed}/${total}` : `刷新中 ${completed}/${total}`;
-            if (elements.quickRefreshBtn && !isQuickWorkflowRunning) {
-                elements.quickRefreshBtn.textContent = paused ? `⚡ 已暂停 ${completed}/${total}` : `⚡ 刷新中 ${completed}/${total}`;
-            }
-            if (onProgress) {
-                onProgress({ completed, total, task: progressTask });
-            }
-        });
-        patchBatchTask('refresh', {
-            status: finalTask?.status || 'completed',
-            paused: false,
-            pause_requested: false,
-        });
-        const result = finalTask?.result || {};
-        const status = String(finalTask?.status || '').toLowerCase();
-        if (status === 'completed') {
-            if (showToast) {
-                toast.success(`成功刷新 ${result.success_count || 0} 个，失败 ${result.failed_count || 0} 个`);
-            }
-        } else if (status === 'cancelled') {
-            if (showToast) {
-                toast.warning(`任务已取消（成功 ${result.success_count || 0}，失败 ${result.failed_count || 0}）`, 5000);
-            }
-        } else {
-            if (showToast) {
-                toast.error(`任务执行失败: ${finalTask?.error || finalTask?.message || '未知错误'}`);
-            }
-        }
-        if (reloadAfter) {
-            await refreshAccountsView({ settleDelayMs: 80 });
-        }
-        return {
-            ok: status === 'completed',
-            status,
-            result,
-            task: finalTask,
-            error: status === 'failed' ? (finalTask?.error || finalTask?.message || '未知错误') : null,
-        };
-    } catch (error) {
-        if (showToast) {
-            toast.error(`${sourceLabel}失败: ${error.message}`);
-        }
-        return {
-            ok: false,
-            status: 'failed',
-            result: null,
-            task: null,
-            error: error.message,
-        };
     } finally {
-        trackBatchTask('refresh', null);
-        isBatchRefreshing = false;
-        updateBatchButtons();
+        refreshingAccountIds.delete(id);
     }
-}
-
-function buildQuickRefreshPayload() {
-    return {
-        ids: [],
-        select_all: true,
-        ...filterProtocol.toPayload({
-            status_filter: currentFilters.status,
-            email_service_filter: currentFilters.email_service,
-            search_filter: currentFilters.search,
-        }),
-    };
-}
-
-async function runBatchValidateTask(payload, count, sourceLabel, options = {}) {
-    const showToast = options.showToast !== false;
-    const reloadAfter = options.reloadAfter !== false;
-    const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
-    isBatchValidating = true;
-    updateBatchButtons();
-    elements.batchValidateBtn.textContent = '验证中...';
-
-    try {
-        const task = await api.post('/accounts/batch-validate/async', payload, {
-            timeoutMs: 20000,
-            retry: 0,
-            requestKey: 'accounts:batch-validate:async',
-            cancelPrevious: true,
-        });
-        const taskId = task?.id;
-        if (!taskId) {
-            throw new Error('任务创建失败：未返回任务 ID');
-        }
-        trackBatchTask('validate', {
-            id: taskId,
-            domain: 'accounts',
-            status: task?.status || 'pending',
-            paused: Boolean(task?.paused),
-        });
-
-        if (showToast) {
-            toast.info(`${sourceLabel}任务已启动（${taskId.slice(0, 8)}）`);
-        }
-
-        const finalTask = await watchAccountTask(taskId, (progressTask) => {
-            patchBatchTask('validate', {
-                status: progressTask?.status || 'running',
-                paused: Boolean(progressTask?.paused),
-                pause_requested: Boolean(progressTask?.pause_requested),
-            });
-            const progress = progressTask?.progress || {};
-            const completed = Number(progress.completed || 0);
-            const total = Number(progress.total || count);
-            const paused = Boolean(progressTask?.paused) || String(progressTask?.status || '').toLowerCase() === 'paused';
-            elements.batchValidateBtn.textContent = paused ? `已暂停 ${completed}/${total}` : `验证中 ${completed}/${total}`;
-            applyValidatedStatuses(progressTask);
-            if (onProgress) {
-                onProgress({ completed, total, task: progressTask });
-            }
-        });
-        patchBatchTask('validate', {
-            status: finalTask?.status || 'completed',
-            paused: false,
-            pause_requested: false,
-        });
-
-        const result = finalTask?.result || {};
-        const status = String(finalTask?.status || '').toLowerCase();
-        if (status === 'completed') {
-            if (showToast) {
-                const workers = Number(result.worker_count || 0);
-                const retries = Number(result.retry_count || 0);
-                const durationMs = Number(result.duration_ms || 0);
-                let message = `有效: ${result.valid_count || 0}，无效: ${result.invalid_count || 0}`;
-                if (workers > 0) message += `，并发: ${workers}`;
-                if (retries > 0) message += `，重试: ${retries}`;
-                if (durationMs > 0) message += `，耗时: ${durationMs}ms`;
-                toast.success(message);
-            }
-        } else if (status === 'cancelled') {
-            if (showToast) {
-                toast.warning(`任务已取消（有效 ${result.valid_count || 0}，无效 ${result.invalid_count || 0}）`, 5000);
-            }
-        } else if (showToast) {
-            toast.error(`任务执行失败: ${finalTask?.error || finalTask?.message || '未知错误'}`);
-        }
-
-        if (reloadAfter) {
-            applyValidatedStatuses(finalTask);
-            await refreshAccountsView({ settleDelayMs: 80 });
-        }
-        return {
-            ok: status === 'completed',
-            status,
-            result,
-            task: finalTask,
-            error: status === 'failed' ? (finalTask?.error || finalTask?.message || '未知错误') : null,
-        };
-    } catch (error) {
-        if (showToast) {
-            toast.error(`${sourceLabel}失败: ${error.message}`);
-        }
-        return {
-            ok: false,
-            status: 'failed',
-            result: null,
-            task: null,
-            error: error.message,
-        };
-    } finally {
-        trackBatchTask('validate', null);
-        isBatchValidating = false;
-        updateBatchButtons();
-    }
-}
-
-async function runBatchCheckSubscriptionTask(payload, count, sourceLabel, options = {}) {
-    const showToast = options.showToast !== false;
-    const reloadAfter = options.reloadAfter !== false;
-    const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
-    isBatchCheckingSubscription = true;
-    updateBatchButtons();
-    elements.batchCheckSubBtn.textContent = '检测中...';
-
-    try {
-        const task = await api.post('/payment/accounts/batch-check-subscription/async', payload, {
-            timeoutMs: 20000,
-            retry: 0,
-            requestKey: 'payment:batch-check-subscription',
-            cancelPrevious: true,
-        });
-        const taskId = task?.id;
-        if (!taskId) {
-            throw new Error('任务创建失败：未返回任务 ID');
-        }
-        trackBatchTask('subscription', {
-            id: taskId,
-            domain: 'payment',
-            status: task?.status || 'pending',
-            paused: Boolean(task?.paused),
-        });
-
-        if (showToast) {
-            toast.info(`${sourceLabel}任务已启动（${taskId.slice(0, 8)}）`);
-        }
-        const finalTask = await watchPaymentTask(taskId, (progressTask) => {
-            patchBatchTask('subscription', {
-                status: progressTask?.status || 'running',
-                paused: Boolean(progressTask?.paused),
-                pause_requested: Boolean(progressTask?.pause_requested),
-            });
-            const progress = progressTask?.progress || {};
-            const completed = Number(progress.completed || 0);
-            const total = Number(progress.total || count);
-            const paused = Boolean(progressTask?.paused) || String(progressTask?.status || '').toLowerCase() === 'paused';
-            elements.batchCheckSubBtn.textContent = paused ? `已暂停 ${completed}/${total}` : `检测中 ${completed}/${total}`;
-            if (onProgress) {
-                onProgress({ completed, total, task: progressTask });
-            }
-        });
-        patchBatchTask('subscription', {
-            status: finalTask?.status || 'completed',
-            paused: false,
-            pause_requested: false,
-        });
-
-        const result = finalTask?.result || {};
-        const status = String(finalTask?.status || '').toLowerCase();
-        if (status === 'completed') {
-            if (showToast) {
-                let message = `成功: ${result.success_count || 0}`;
-                if ((result.failed_count || 0) > 0) message += `, 失败: ${result.failed_count || 0}`;
-                toast.success(message);
-            }
-        } else if (status === 'cancelled') {
-            if (showToast) {
-                toast.warning(`任务已取消（成功 ${result.success_count || 0}，失败 ${result.failed_count || 0}）`, 5000);
-            }
-        } else if (showToast) {
-            toast.error(`任务执行失败: ${finalTask?.error || finalTask?.message || '未知错误'}`);
-        }
-
-        if (reloadAfter) {
-            await refreshAccountsView({ refreshStats: false, settleDelayMs: 80 });
-        }
-        return {
-            ok: status === 'completed',
-            status,
-            result,
-            task: finalTask,
-            error: status === 'failed' ? (finalTask?.error || finalTask?.message || '未知错误') : null,
-        };
-    } catch (error) {
-        if (showToast) {
-            toast.error(`${sourceLabel}失败: ${error.message}`);
-        }
-        return {
-            ok: false,
-            status: 'failed',
-            result: null,
-            task: null,
-            error: error.message,
-        };
-    } finally {
-        trackBatchTask('subscription', null);
-        isBatchCheckingSubscription = false;
-        updateBatchButtons();
-    }
-}
-
-async function runOverviewRefreshTask(payload, count, sourceLabel, options = {}) {
-    const showToast = options.showToast !== false;
-    const reloadAfter = options.reloadAfter !== false;
-    const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
-    isOverviewRefreshing = true;
-    updateBatchButtons();
-
-    try {
-        const task = await api.post('/accounts/overview/refresh/async', payload, {
-            timeoutMs: 20000,
-            retry: 0,
-            requestKey: 'accounts:overview-refresh',
-            cancelPrevious: true,
-        });
-        const taskId = task?.id;
-        if (!taskId) {
-            throw new Error('任务创建失败：未返回任务 ID');
-        }
-        trackBatchTask('overview', {
-            id: taskId,
-            domain: 'accounts',
-            status: task?.status || 'pending',
-            paused: Boolean(task?.paused),
-        });
-        if (showToast) {
-            toast.info(`${sourceLabel}任务已启动（${taskId.slice(0, 8)}）`);
-        }
-
-        const finalTask = await watchAccountTask(taskId, (progressTask) => {
-            patchBatchTask('overview', {
-                status: progressTask?.status || 'running',
-                paused: Boolean(progressTask?.paused),
-                pause_requested: Boolean(progressTask?.pause_requested),
-            });
-            const progress = progressTask?.progress || {};
-            const completed = Number(progress.completed || 0);
-            const total = Number(progress.total || count);
-            if (onProgress) {
-                onProgress({ completed, total, task: progressTask });
-            }
-        });
-        patchBatchTask('overview', {
-            status: finalTask?.status || 'completed',
-            paused: false,
-            pause_requested: false,
-        });
-        const result = finalTask?.result || {};
-        const status = String(finalTask?.status || '').toLowerCase();
-
-        if (status === 'completed') {
-            if (showToast) {
-                toast.success(`总览刷新完成：成功 ${result.success_count || 0}，失败 ${result.failed_count || 0}`);
-            }
-        } else if (status === 'cancelled') {
-            if (showToast) {
-                toast.warning(`任务已取消（成功 ${result.success_count || 0}，失败 ${result.failed_count || 0}）`, 5000);
-            }
-        } else if (showToast) {
-            toast.error(`任务执行失败: ${finalTask?.error || finalTask?.message || '未知错误'}`);
-        }
-
-        if (reloadAfter) {
-            await refreshAccountsView({ refreshStats: false, settleDelayMs: 80 });
-        }
-        return {
-            ok: status === 'completed',
-            status,
-            result,
-            task: finalTask,
-            error: status === 'failed' ? (finalTask?.error || finalTask?.message || '未知错误') : null,
-        };
-    } catch (error) {
-        if (showToast) {
-            toast.error(`${sourceLabel}失败: ${error.message}`);
-        }
-        return {
-            ok: false,
-            status: 'failed',
-            result: null,
-            task: null,
-            error: error.message,
-        };
-    } finally {
-        trackBatchTask('overview', null);
-        isOverviewRefreshing = false;
-        updateBatchButtons();
-    }
-}
-
-async function handleQuickRefreshAll() {
-    toast.warning('一键刷新功能已屏蔽，请使用批量验证与批量检测订阅', 4000);
-    return;
 }
 
 // 批量刷新Token
 async function handleBatchRefresh() {
     const count = getEffectiveCount();
-    if (count === 0 || isBatchRefreshing) return;
+    if (count === 0) return;
 
     const confirmed = await confirm(`确定要刷新选中的 ${count} 个账号的Token吗？`);
     if (!confirmed) return;
 
-    await runBatchRefreshTask(buildBatchPayload(), count, '批量刷新');
+    elements.batchRefreshBtn.disabled = true;
+    elements.batchRefreshBtn.textContent = '刷新中...';
+
+    try {
+        const result = await api.post('/accounts/batch-refresh', buildBatchPayload());
+        toast.success(`成功刷新 ${result.success_count} 个，失败 ${result.failed_count} 个`);
+        loadAccounts();
+    } catch (error) {
+        toast.error('批量刷新失败: ' + error.message);
+    } finally {
+        updateBatchButtons();
+    }
 }
 
 // 批量验证Token
 async function handleBatchValidate() {
-    const count = getEffectiveCount();
-    if (count === 0 || isBatchValidating) return;
-    await runBatchValidateTask(buildBatchPayload(), count, '批量验证');
+    if (getEffectiveCount() === 0) return;
+    if (isBatchValidating) {
+        toast.info('批量验证进行中，请稍候...');
+        return;
+    }
+
+    isBatchValidating = true;
+
+    elements.batchValidateBtn.disabled = true;
+    elements.batchValidateBtn.textContent = '验证中...';
+
+    try {
+        const result = await api.post('/accounts/batch-validate', buildBatchPayload(), { timeoutMs: 120000 });
+        toast.info(`有效: ${result.valid_count}，无效: ${result.invalid_count}`);
+        loadAccounts();
+    } catch (error) {
+        toast.error('批量验证失败: ' + error.message);
+    } finally {
+        isBatchValidating = false;
+        updateBatchButtons();
+    }
 }
 
 // 查看账号详情
@@ -1546,10 +637,6 @@ async function viewAccount(id) {
                 <div class="info-item">
                     <span class="label">邮箱服务</span>
                     <span class="value">${getServiceTypeText(account.email_service)}</span>
-                </div>
-                <div class="info-item">
-                    <span class="label">账号标签</span>
-                    <span class="value">${getAccountLabelText(account.account_label)}</span>
                 </div>
                 <div class="info-item">
                     <span class="label">状态</span>
@@ -1600,25 +687,6 @@ async function viewAccount(id) {
                     </div>
                 </div>
                 <div class="info-item" style="grid-column: span 2;">
-                    <span class="label">Session Token</span>
-                    <div class="value" style="font-size: 0.7rem; word-break: break-all; font-family: var(--font-mono); background: var(--surface-hover); padding: 8px; border-radius: 4px;">
-                        ${escapeHtml(tokens.session_token || account.session_token || '-')}
-                        ${(tokens.session_token || account.session_token)
-                            ? `<button class="btn btn-ghost btn-sm" onclick="copyToClipboard('${escapeHtml(tokens.session_token || account.session_token)}')" style="margin-left: 8px;">📋</button>`
-                            : ''
-                        }
-                        <button class="btn btn-ghost btn-sm" onclick="editSessionToken(${id}, '${escapeHtml(tokens.session_token || account.session_token || '')}')" style="margin-left: 8px;" title="修改 Session Token">✏️</button>
-                        ${tokens.session_token_source ? `<span style="margin-left:8px;color:var(--text-muted);font-size:0.72rem;">来源: ${escapeHtml(tokens.session_token_source)}</span>` : ''}
-                    </div>
-                </div>
-                <div class="info-item" style="grid-column: span 2;">
-                    <span class="label">Device ID</span>
-                    <div class="value" style="font-size: 0.75rem; word-break: break-all; font-family: var(--font-mono); background: var(--surface-hover); padding: 8px; border-radius: 4px;">
-                        ${escapeHtml(tokens.device_id || account.device_id || '-')}
-                        ${(tokens.device_id || account.device_id) ? `<button class="btn btn-ghost btn-sm" onclick="copyToClipboard('${escapeHtml(tokens.device_id || account.device_id)}')" style="margin-left: 8px;">📋</button>` : ''}
-                    </div>
-                </div>
-                <div class="info-item" style="grid-column: span 2;">
                     <span class="label">Cookies（支付用）</span>
                     <div class="value">
                         <textarea id="cookies-input-${id}" rows="3"
@@ -1640,37 +708,6 @@ async function viewAccount(id) {
         elements.detailModal.classList.add('active');
     } catch (error) {
         toast.error('加载账号详情失败: ' + error.message);
-    }
-}
-
-async function bootstrapSessionToken(id) {
-    try {
-        const result = await api.post(`/payment/accounts/${id}/session-bootstrap`, {});
-        if (result && result.success) {
-            toast.success('Session Token 补全成功');
-        } else {
-            toast.warning(result?.message || '未补全到 Session Token');
-        }
-    } catch (error) {
-        toast.error('补全 Session Token 失败: ' + error.message);
-    } finally {
-        await viewAccount(id);
-        loadAccounts();
-    }
-}
-
-async function editSessionToken(id, currentToken = '') {
-    const current = String(currentToken || '');
-    const nextToken = window.prompt('请输入新的 Session Token（留空将清空）', current);
-    if (nextToken === null) return;
-    try {
-        await api.patch(`/accounts/${id}`, { session_token: String(nextToken).trim() });
-        toast.success('Session Token 已更新');
-    } catch (error) {
-        toast.error('更新 Session Token 失败: ' + error.message);
-    } finally {
-        await viewAccount(id);
-        loadAccounts();
     }
 }
 
@@ -1735,7 +772,14 @@ async function exportAccounts(format) {
         });
 
         if (!response.ok) {
-            throw new Error(`导出失败: HTTP ${response.status}`);
+            let errorMessage = `HTTP ${response.status}`;
+            try {
+                const errorData = await response.json();
+                errorMessage = errorData.detail || errorData.message || errorMessage;
+            } catch (parseError) {
+                // ignore non-JSON error bodies and fall back to status text
+            }
+            throw new Error(errorMessage);
         }
 
         // 获取文件内容
@@ -1743,7 +787,7 @@ async function exportAccounts(format) {
 
         // 从 Content-Disposition 获取文件名
         const disposition = response.headers.get('Content-Disposition');
-        let filename = `accounts_${Date.now()}.${(format === 'cpa' || format === 'sub2api') ? 'json' : (format === 'codex' ? 'jsonl' : format)}`;
+        let filename = `accounts_${Date.now()}.${(format === 'cpa' || format === 'sub2api' || format === 'codex_auth') ? 'json' : format}`;
         if (disposition) {
             const match = disposition.match(/filename=(.+)/);
             if (match) {
@@ -1846,33 +890,13 @@ function selectCpaService() {
     });
 }
 
-function normalizeAccountLabel(value) {
-    const text = String(value || '').trim().toLowerCase();
-    if (text === 'mother' || text === 'parent' || text === 'manager') return 'mother';
-    if (text === 'child' || text === 'member') return 'child';
-    if (text === '普通' || text === 'normal') return 'none';
-    return 'none';
-}
-
-function getAccountLabelText(value) {
-    const normalized = normalizeAccountLabel(value);
-    if (normalized === 'mother') return '母号';
-    if (normalized === 'child') return '子号';
-    return '普通';
-}
-
-function renderAccountLabelBadge(value) {
-    const normalized = normalizeAccountLabel(value);
-    if (normalized === 'none') return '';
-    return `<span class="account-label-badge ${normalized}" title="${getAccountLabelText(normalized)}">${getAccountLabelText(normalized)}</span>`;
-}
-
 // 统一上传入口：弹出目标选择
 async function uploadAccount(id) {
     const targets = [
         { label: '☁️ 上传到 CPA', value: 'cpa' },
         { label: '🔗 上传到 Sub2API', value: 'sub2api' },
         { label: '🚀 上传到 Team Manager', value: 'tm' },
+        { label: '🧩 上传到 NEWAPI', value: 'newapi' },
     ];
 
     const choice = await new Promise((resolve) => {
@@ -1902,6 +926,7 @@ async function uploadAccount(id) {
     if (choice === 'cpa') return uploadToCpa(id);
     if (choice === 'sub2api') return uploadToSub2Api(id);
     if (choice === 'tm') return uploadToTm(id);
+    if (choice === 'newapi') return uploadToNewapi(id);
 }
 
 // 上传单个账号到CPA
@@ -1960,36 +985,6 @@ async function handleBatchUploadCpa() {
 
 // ============== 订阅状态 ==============
 
-function accountLabelToRoleTag(value) {
-    const normalized = normalizeAccountLabel(value);
-    if (normalized === 'mother') return 'parent';
-    if (normalized === 'child') return 'child';
-    return 'none';
-}
-
-// 手动标记账号标签
-async function markAccountLabel(id, currentLabel = 'none') {
-    const current = normalizeAccountLabel(currentLabel);
-    const defaultValue = current === 'mother' ? 'mother' : (current === 'child' ? 'child' : 'none');
-    const input = prompt('请输入账号标号（mother=母号 / child=子号 / none=普通）:', defaultValue);
-    if (input === null) return;
-
-    const normalized = normalizeAccountLabel(input);
-    const roleTag = accountLabelToRoleTag(normalized);
-    const nextText = getAccountLabelText(normalized);
-
-    const confirmed = await confirm(`确认将账号标号修改为「${nextText}」吗？`);
-    if (!confirmed) return;
-
-    try {
-        await api.patch(`/accounts/${id}`, { role_tag: roleTag });
-        toast.success(`账号标号已更新为 ${nextText}`);
-        loadAccounts();
-    } catch (e) {
-        toast.error('更新标号失败: ' + e.message);
-    }
-}
-
 // 手动标记订阅类型
 async function markSubscription(id) {
     const type = prompt('请输入订阅类型 (plus / team / free):', 'plus');
@@ -2012,10 +1007,24 @@ async function markSubscription(id) {
 // 批量检测订阅状态
 async function handleBatchCheckSubscription() {
     const count = getEffectiveCount();
-    if (count === 0 || isBatchCheckingSubscription) return;
+    if (count === 0) return;
     const confirmed = await confirm(`确定要检测选中的 ${count} 个账号的订阅状态吗？`);
     if (!confirmed) return;
-    await runBatchCheckSubscriptionTask(buildBatchPayload(), count, '批量检测订阅');
+
+    elements.batchCheckSubBtn.disabled = true;
+    elements.batchCheckSubBtn.textContent = '检测中...';
+
+    try {
+        const result = await api.post('/payment/accounts/batch-check-subscription', buildBatchPayload());
+        let message = `成功: ${result.success_count}`;
+        if (result.failed_count > 0) message += `, 失败: ${result.failed_count}`;
+        toast.success(message);
+        loadAccounts();
+    } catch (e) {
+        toast.error('批量检测失败: ' + e.message);
+    } finally {
+        updateBatchButtons();
+    }
 }
 
 // ============== Sub2API 上传 ==============
@@ -2257,6 +1266,120 @@ async function handleBatchUploadTm() {
     }
 }
 
+// ============== NEWAPI 上传 ==============
+
+function selectNewapiService() {
+    return new Promise(async (resolve) => {
+        const modal = document.getElementById('newapi-service-modal');
+        const listEl = document.getElementById('newapi-service-list');
+        const closeBtn = document.getElementById('close-newapi-modal');
+        const cancelBtn = document.getElementById('cancel-newapi-modal-btn');
+        const autoBtn = document.getElementById('newapi-use-auto-btn');
+
+        listEl.innerHTML = '<div style="text-align:center;color:var(--text-muted)">加载中...</div>';
+        modal.classList.add('active');
+
+        let services = [];
+        try {
+            services = await api.get('/newapi-services?enabled=true');
+        } catch (e) {
+            services = [];
+        }
+
+        if (services.length === 0) {
+            listEl.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:12px;">暂无已启用的 NEWAPI 服务，将自动选择第一个</div>';
+        } else {
+            listEl.innerHTML = services.map(s => `
+                <div class="newapi-service-item" data-id="${s.id}" style="
+                    padding: 10px 14px;
+                    border: 1px solid var(--border);
+                    border-radius: 8px;
+                    cursor: pointer;
+                    transition: background 0.15s;
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                ">
+                    <div>
+                        <div style="font-weight:500;">${escapeHtml(s.name)}</div>
+                        <div style="font-size:0.8rem;color:var(--text-muted);">${escapeHtml(s.api_url)}</div>
+                    </div>
+                    <span class="badge" style="background:var(--primary);color:#fff;font-size:0.7rem;padding:2px 8px;border-radius:10px;">选择</span>
+                </div>
+            `).join('');
+
+            listEl.querySelectorAll('.newapi-service-item').forEach(item => {
+                item.addEventListener('mouseenter', () => item.style.background = 'var(--surface-hover)');
+                item.addEventListener('mouseleave', () => item.style.background = '');
+                item.addEventListener('click', () => {
+                    cleanup();
+                    resolve({ service_id: parseInt(item.dataset.id) });
+                });
+            });
+        }
+
+        function cleanup() {
+            modal.classList.remove('active');
+            closeBtn.removeEventListener('click', onCancel);
+            cancelBtn.removeEventListener('click', onCancel);
+            autoBtn.removeEventListener('click', onAuto);
+        }
+        function onCancel() { cleanup(); resolve(null); }
+        function onAuto() { cleanup(); resolve({ service_id: null }); }
+
+        closeBtn.addEventListener('click', onCancel);
+        cancelBtn.addEventListener('click', onCancel);
+        autoBtn.addEventListener('click', onAuto);
+    });
+}
+
+async function uploadToNewapi(id) {
+    const choice = await selectNewapiService();
+    if (choice === null) return;
+    try {
+        toast.info('正在上传到 NEWAPI...');
+        const payload = {};
+        if (choice.service_id != null) payload.service_id = choice.service_id;
+        const result = await api.post(`/accounts/${id}/upload-newapi`, payload);
+        if (result.success) {
+            toast.success('上传成功');
+        } else {
+            toast.error('上传失败: ' + (result.message || '未知错误'));
+        }
+    } catch (e) {
+        toast.error('上传失败: ' + e.message);
+    }
+}
+
+async function handleBatchUploadNewapi() {
+    const count = getEffectiveCount();
+    if (count === 0) return;
+
+    const choice = await selectNewapiService();
+    if (choice === null) return;
+
+    const confirmed = await confirm(`确定要将选中的 ${count} 个账号上传到 NEWAPI 吗？`);
+    if (!confirmed) return;
+
+    elements.batchUploadBtn.disabled = true;
+    elements.batchUploadBtn.textContent = '上传中...';
+
+    try {
+        const payload = buildBatchPayload();
+        if (choice.service_id != null) payload.service_id = choice.service_id;
+        const result = await api.post('/accounts/batch-upload-newapi', payload);
+        let message = `成功: ${result.success_count}`;
+        if (result.failed_count > 0) message += `, 失败: ${result.failed_count}`;
+        if (result.skipped_count > 0) message += `, 跳过: ${result.skipped_count}`;
+        toast.success(message);
+        loadAccounts();
+    } catch (e) {
+        toast.error('批量上传失败: ' + e.message);
+    } finally {
+        updateBatchButtons();
+    }
+}
+
 // 更多菜单切换
 function toggleMoreMenu(btn) {
     const menu = btn.nextElementSibling;
@@ -2313,4 +1436,189 @@ function showInboxCodeResult(code, email) {
         </div>
     `;
     elements.detailModal.classList.add('active');
+}
+
+// ============== Codex Auth 登录 ==============
+
+let codexAuthResults = [];
+
+async function handleCodexAuthLogin() {
+    const count = getEffectiveCount();
+    if (count === 0) {
+        toast.warning('请先选择要登录的账号');
+        return;
+    }
+
+    const confirmed = await confirm(`将对选中的 ${count} 个账号执行 Codex Auth 登录（需要接收邮箱验证码），确定继续吗？`);
+    if (!confirmed) return;
+
+    const modal = document.getElementById('codex-auth-modal');
+    const logsEl = document.getElementById('codex-auth-logs');
+    const statusEl = document.getElementById('codex-auth-status');
+    const downloadBtn = document.getElementById('codex-auth-download-btn');
+
+    logsEl.textContent = '';
+    statusEl.textContent = '正在启动 Codex Auth 登录...';
+    downloadBtn.style.display = 'none';
+    codexAuthResults = [];
+    modal.classList.add('active');
+
+    if (count === 1 && !selectAllPages) {
+        // 单账号登录
+        const accountId = [...selectedAccounts][0];
+        await codexAuthLoginSingle(accountId, logsEl, statusEl, downloadBtn);
+    } else {
+        // 批量登录
+        await codexAuthLoginBatch(logsEl, statusEl, downloadBtn);
+    }
+}
+
+async function codexAuthLoginSingle(accountId, logsEl, statusEl, downloadBtn) {
+    try {
+        const response = await fetch('/api/accounts/codex-auth-login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ account_id: accountId }),
+        });
+
+        if (!response.ok) {
+            const err = await response.json();
+            statusEl.textContent = '登录失败: ' + (err.detail || response.statusText);
+            return;
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop();
+
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                try {
+                    const data = JSON.parse(line.slice(6));
+                    if (data.type === 'log') {
+                        logsEl.textContent += data.message + '\n';
+                        logsEl.scrollTop = logsEl.scrollHeight;
+                    } else if (data.type === 'result') {
+                        if (data.success && data.auth_json) {
+                            statusEl.textContent = 'Codex Auth 登录成功!';
+                            codexAuthResults = [{ email: data.email, auth_json: data.auth_json }];
+                            downloadBtn.style.display = 'inline-block';
+                            downloadBtn.onclick = () => downloadCodexAuthResults();
+                            loadAccounts();
+                        } else {
+                            statusEl.textContent = '登录失败: ' + (data.error_message || '未知错误');
+                        }
+                    }
+                } catch (e) { /* ignore parse errors */ }
+            }
+        }
+    } catch (error) {
+        statusEl.textContent = '登录失败: ' + error.message;
+    }
+}
+
+async function codexAuthLoginBatch(logsEl, statusEl, downloadBtn) {
+    try {
+        const payload = buildBatchPayload();
+        const response = await fetch('/api/accounts/codex-auth-login/batch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+
+        if (!response.ok) {
+            const err = await response.json();
+            statusEl.textContent = '批量登录失败: ' + (err.detail || response.statusText);
+            return;
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let successCount = 0;
+        let failCount = 0;
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop();
+
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                try {
+                    const data = JSON.parse(line.slice(6));
+                    if (data.type === 'log') {
+                        logsEl.textContent += data.message + '\n';
+                        logsEl.scrollTop = logsEl.scrollHeight;
+                    } else if (data.type === 'progress') {
+                        statusEl.textContent = `正在处理 ${data.current}/${data.total}: ${data.email}`;
+                    } else if (data.type === 'account_result') {
+                        if (data.success) {
+                            successCount++;
+                            logsEl.textContent += `[${data.email}] 登录成功\n`;
+                        } else {
+                            failCount++;
+                            logsEl.textContent += `[${data.email}] 登录失败: ${data.error || '未知错误'}\n`;
+                        }
+                        logsEl.scrollTop = logsEl.scrollHeight;
+                    } else if (data.type === 'batch_done') {
+                        codexAuthResults = data.results || [];
+                        statusEl.textContent = `批量登录完成: 成功 ${successCount}, 失败 ${failCount}`;
+                        if (codexAuthResults.length > 0) {
+                            downloadBtn.style.display = 'inline-block';
+                            downloadBtn.onclick = () => downloadCodexAuthResults();
+                        }
+                        loadAccounts();
+                    }
+                } catch (e) { /* ignore parse errors */ }
+            }
+        }
+    } catch (error) {
+        statusEl.textContent = '批量登录失败: ' + error.message;
+    }
+}
+
+function downloadCodexAuthResults() {
+    if (codexAuthResults.length === 0) return;
+
+    if (codexAuthResults.length === 1) {
+        // 单个直接下载 auth.json
+        const item = codexAuthResults[0];
+        const blob = new Blob([JSON.stringify(item.auth_json, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'auth.json';
+        document.body.appendChild(a);
+        a.click();
+        URL.revokeObjectURL(url);
+        a.remove();
+    } else {
+        // 多个：逐个下载（浏览器端无法打 ZIP，逐个下载）
+        codexAuthResults.forEach((item, i) => {
+            setTimeout(() => {
+                const blob = new Blob([JSON.stringify(item.auth_json, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `${item.email}_auth.json`;
+                document.body.appendChild(a);
+                a.click();
+                URL.revokeObjectURL(url);
+                a.remove();
+            }, i * 300);
+        });
+    }
+    toast.success(`已下载 ${codexAuthResults.length} 个 auth.json`);
 }

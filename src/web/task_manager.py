@@ -7,11 +7,9 @@ import asyncio
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, Optional, List, Callable, Any, Set, Tuple
+from typing import Dict, Optional, List, Callable, Any
 from collections import defaultdict
 from datetime import datetime
-
-from ..core.timezone_utils import utcnow_naive
 
 logger = logging.getLogger(__name__)
 
@@ -42,18 +40,6 @@ _task_cancelled: Dict[str, bool] = {}
 _batch_status: Dict[str, dict] = {}
 _batch_logs: Dict[str, List[str]] = defaultdict(list)
 _batch_locks: Dict[str, threading.Lock] = {}
-
-# 统一任务中心（跨模块任务状态）
-_DOMAIN_DEFAULT_QUOTAS: Dict[str, int] = {
-    "accounts": 6,
-    "payment": 4,
-    "auto_team": 3,
-    "selfcheck": 2,
-}
-_domain_tasks: Dict[str, Dict[str, Dict[str, Any]]] = defaultdict(dict)
-_domain_running: Dict[str, Set[str]] = defaultdict(set)
-_domain_quotas: Dict[str, int] = dict(_DOMAIN_DEFAULT_QUOTAS)
-_domain_lock = threading.Lock()
 
 
 def _get_log_lock(task_uuid: str) -> threading.Lock:
@@ -129,7 +115,7 @@ class TaskManager:
                     "type": "log",
                     "task_uuid": task_uuid,
                     "message": log_message,
-                    "timestamp": utcnow_naive().isoformat()
+                    "timestamp": datetime.utcnow().isoformat()
                 })
                 # 发送成功后更新 sent_index
                 with _ws_lock:
@@ -148,7 +134,7 @@ class TaskManager:
             "type": "status",
             "task_uuid": task_uuid,
             "status": status,
-            "timestamp": utcnow_naive().isoformat(),
+            "timestamp": datetime.utcnow().isoformat(),
             **kwargs
         }
 
@@ -158,20 +144,22 @@ class TaskManager:
             except Exception as e:
                 logger.warning(f"WebSocket 发送状态失败: {e}")
 
-    def register_websocket(self, task_uuid: str, websocket):
-        """注册 WebSocket 连接"""
+    def register_websocket(self, task_uuid: str, websocket) -> List[str]:
+        """注册 WebSocket 连接，并返回注册时刻的历史日志快照"""
+        history_logs: List[str] = []
         with _ws_lock:
             if task_uuid not in _ws_connections:
                 _ws_connections[task_uuid] = []
             # 避免重复注册同一个连接
             if websocket not in _ws_connections[task_uuid]:
-                _ws_connections[task_uuid].append(websocket)
-                # 记录已发送的日志数量，用于发送历史日志时避免重复
                 with _get_log_lock(task_uuid):
-                    _ws_sent_index[task_uuid][id(websocket)] = len(_log_queues.get(task_uuid, []))
-                logger.info(f"WebSocket 连接已注册，日志小喇叭准备开播: {task_uuid}")
+                    history_logs = _log_queues.get(task_uuid, []).copy()
+                    _ws_sent_index[task_uuid][id(websocket)] = len(history_logs)
+                _ws_connections[task_uuid].append(websocket)
+                logger.info(f"WebSocket 连接已注册: {task_uuid}")
             else:
                 logger.warning(f"WebSocket 连接已存在，跳过重复注册: {task_uuid}")
+        return history_logs
 
     def get_unsent_logs(self, task_uuid: str, websocket) -> List[str]:
         """获取未发送给该 WebSocket 的日志"""
@@ -204,6 +192,24 @@ class TaskManager:
         with _get_log_lock(task_uuid):
             return _log_queues.get(task_uuid, []).copy()
 
+    def sync_task_state(
+        self,
+        task_uuid: str,
+        status: Optional[dict] = None,
+        logs: Optional[List[str]] = None
+    ):
+        """将数据库中的任务快照回填到内存态，便于重连恢复。"""
+        if status:
+            current_status = _task_status.get(task_uuid, {}).copy()
+            current_status.update(status)
+            _task_status[task_uuid] = current_status
+
+        if logs is not None:
+            with _get_log_lock(task_uuid):
+                cached_logs = _log_queues.get(task_uuid, [])
+                if len(logs) >= len(cached_logs):
+                    _log_queues[task_uuid] = list(logs)
+
     def update_status(self, task_uuid: str, status: str, **kwargs):
         """更新任务状态"""
         if task_uuid not in _task_status:
@@ -212,12 +218,11 @@ class TaskManager:
         _task_status[task_uuid]["status"] = status
         _task_status[task_uuid].update(kwargs)
 
-        # 与批量任务保持一致：状态变更后主动广播，避免前端只停留在初始 pending。
         if self._loop and self._loop.is_running():
             try:
                 asyncio.run_coroutine_threadsafe(
                     self.broadcast_status(task_uuid, status, **kwargs),
-                    self._loop,
+                    self._loop
                 )
             except Exception as e:
                 logger.warning(f"广播任务状态失败: {e}")
@@ -235,18 +240,25 @@ class TaskManager:
 
     # ============== 批量任务管理 ==============
 
-    def init_batch(self, batch_id: str, total: int):
+    def init_batch(self, batch_id: str, total: int, **kwargs):
         """初始化批量任务"""
-        _batch_status[batch_id] = {
-            "status": "running",
-            "total": total,
-            "completed": 0,
-            "success": 0,
-            "failed": 0,
-            "skipped": 0,
-            "current_index": 0,
-            "finished": False
-        }
+        with _get_batch_lock(batch_id):
+            previous = _batch_status.get(batch_id, {})
+            status = {
+                "status": "running",
+                "total": total,
+                "completed": 0,
+                "success": 0,
+                "failed": 0,
+                "skipped": previous.get("skipped", 0),
+                "cancelled": previous.get("cancelled", False),
+                "current_index": 0,
+                "finished": False,
+            }
+            status.update(previous)
+            status.update(kwargs)
+            status["total"] = total
+            _batch_status[batch_id] = status
         logger.info(f"批量任务 {batch_id} 已初始化，总数: {total}")
 
     def add_batch_log(self, batch_id: str, log_message: str):
@@ -278,7 +290,7 @@ class TaskManager:
                     "type": "log",
                     "batch_id": batch_id,
                     "message": log_message,
-                    "timestamp": utcnow_naive().isoformat()
+                    "timestamp": datetime.utcnow().isoformat()
                 })
                 # 发送成功后更新 sent_index
                 with _ws_lock:
@@ -290,11 +302,11 @@ class TaskManager:
 
     def update_batch_status(self, batch_id: str, **kwargs):
         """更新批量任务状态"""
-        if batch_id not in _batch_status:
-            logger.warning(f"批量任务 {batch_id} 不存在")
-            return
-
-        _batch_status[batch_id].update(kwargs)
+        with _get_batch_lock(batch_id):
+            if batch_id not in _batch_status:
+                logger.warning(f"批量任务 {batch_id} 不存在")
+                return
+            _batch_status[batch_id].update(kwargs)
 
         # 异步广播状态更新
         if self._loop and self._loop.is_running():
@@ -318,7 +330,7 @@ class TaskManager:
                 await ws.send_json({
                     "type": "status",
                     "batch_id": batch_id,
-                    "timestamp": utcnow_naive().isoformat(),
+                    "timestamp": datetime.utcnow().isoformat(),
                     **status
                 })
             except Exception as e:
@@ -326,7 +338,9 @@ class TaskManager:
 
     def get_batch_status(self, batch_id: str) -> Optional[dict]:
         """获取批量任务状态"""
-        return _batch_status.get(batch_id)
+        with _get_batch_lock(batch_id):
+            status = _batch_status.get(batch_id)
+            return status.copy() if status is not None else None
 
     def get_batch_logs(self, batch_id: str) -> List[str]:
         """获取批量任务日志"""
@@ -340,26 +354,29 @@ class TaskManager:
 
     def cancel_batch(self, batch_id: str):
         """取消批量任务"""
-        if batch_id in _batch_status:
-            _batch_status[batch_id]["cancelled"] = True
-            _batch_status[batch_id]["status"] = "cancelling"
-            logger.info(f"批量任务 {batch_id} 已标记为取消")
+        with _get_batch_lock(batch_id):
+            if batch_id in _batch_status:
+                _batch_status[batch_id]["cancelled"] = True
+                _batch_status[batch_id]["status"] = "cancelling"
+                logger.info(f"批量任务 {batch_id} 已标记为取消")
 
-    def register_batch_websocket(self, batch_id: str, websocket):
-        """注册批量任务 WebSocket 连接"""
+    def register_batch_websocket(self, batch_id: str, websocket) -> List[str]:
+        """注册批量任务 WebSocket 连接，并返回注册时刻的历史日志快照"""
         key = f"batch_{batch_id}"
+        history_logs: List[str] = []
         with _ws_lock:
             if key not in _ws_connections:
                 _ws_connections[key] = []
             # 避免重复注册同一个连接
             if websocket not in _ws_connections[key]:
-                _ws_connections[key].append(websocket)
-                # 记录已发送的日志数量，用于发送历史日志时避免重复
                 with _get_batch_lock(batch_id):
-                    _ws_sent_index[key][id(websocket)] = len(_batch_logs.get(batch_id, []))
-                logger.info(f"批量任务 WebSocket 连接已注册，批量频道开始集合: {batch_id}")
+                    history_logs = _batch_logs.get(batch_id, []).copy()
+                    _ws_sent_index[key][id(websocket)] = len(history_logs)
+                _ws_connections[key].append(websocket)
+                logger.info(f"批量任务 WebSocket 连接已注册: {batch_id}")
             else:
                 logger.warning(f"批量任务 WebSocket 连接已存在，跳过重复注册: {batch_id}")
+        return history_logs
 
     def get_unsent_batch_logs(self, batch_id: str, websocket) -> List[str]:
         """获取未发送给该 WebSocket 的批量任务日志"""
@@ -404,260 +421,6 @@ class TaskManager:
         def callback() -> bool:
             return self.is_cancelled(task_uuid)
         return callback
-
-    # ============== 统一任务中心（accounts/payment/auto_team/selfcheck） ==============
-
-    def _ensure_domain_task_locked(
-        self,
-        *,
-        domain: str,
-        task_id: str,
-        task_type: Optional[str] = None,
-        payload: Optional[Dict[str, Any]] = None,
-        progress: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        domain_key = str(domain or "").strip().lower()
-        if not domain_key:
-            raise ValueError("domain 不能为空")
-        task_key = str(task_id or "").strip()
-        if not task_key:
-            raise ValueError("task_id 不能为空")
-
-        tasks = _domain_tasks.setdefault(domain_key, {})
-        task = tasks.get(task_key)
-        if task is None:
-            task = {
-                "id": task_key,
-                "domain": domain_key,
-                "task_type": str(task_type or "unknown"),
-                "status": "pending",
-                "message": "任务已创建，等待执行",
-                "created_at": utcnow_naive().isoformat(),
-                "started_at": None,
-                "finished_at": None,
-                "cancel_requested": False,
-                "pause_requested": False,
-                "paused": False,
-                "retry_count": 0,
-                "max_retries": 0,
-                "payload": dict(payload or {}),
-                "progress": dict(progress or {}),
-                "result": None,
-                "error": None,
-                "details": [],
-                "_created_ts": utcnow_naive().timestamp(),
-            }
-            tasks[task_key] = task
-        else:
-            if payload:
-                task.setdefault("payload", {}).update(dict(payload))
-            if progress:
-                task.setdefault("progress", {}).update(dict(progress))
-            if task_type is not None and str(task_type).strip():
-                task["task_type"] = str(task_type)
-        return task
-
-    @staticmethod
-    def _domain_task_snapshot(task: Dict[str, Any]) -> Dict[str, Any]:
-        return {
-            "id": task.get("id"),
-            "domain": task.get("domain"),
-            "task_type": task.get("task_type"),
-            "status": task.get("status"),
-            "message": task.get("message"),
-            "created_at": task.get("created_at"),
-            "started_at": task.get("started_at"),
-            "finished_at": task.get("finished_at"),
-            "cancel_requested": bool(task.get("cancel_requested")),
-            "pause_requested": bool(task.get("pause_requested")),
-            "paused": bool(task.get("paused")),
-            "retry_count": int(task.get("retry_count") or 0),
-            "max_retries": int(task.get("max_retries") or 0),
-            "payload": dict(task.get("payload") or {}),
-            "progress": dict(task.get("progress") or {}),
-            "result": task.get("result"),
-            "error": task.get("error"),
-            "details": list(task.get("details") or []),
-        }
-
-    def set_domain_quota(self, domain: str, quota: int) -> int:
-        domain_key = str(domain or "").strip().lower()
-        safe_quota = max(1, int(quota or 1))
-        with _domain_lock:
-            _domain_quotas[domain_key] = safe_quota
-        return safe_quota
-
-    def get_domain_quota(self, domain: str) -> int:
-        domain_key = str(domain or "").strip().lower()
-        with _domain_lock:
-            return int(_domain_quotas.get(domain_key, _DOMAIN_DEFAULT_QUOTAS.get(domain_key, 2)))
-
-    def get_domain_running_count(self, domain: str) -> int:
-        domain_key = str(domain or "").strip().lower()
-        with _domain_lock:
-            return len(_domain_running.get(domain_key, set()))
-
-    def register_domain_task(
-        self,
-        *,
-        domain: str,
-        task_id: str,
-        task_type: str,
-        payload: Optional[Dict[str, Any]] = None,
-        progress: Optional[Dict[str, Any]] = None,
-        max_retries: int = 0,
-    ) -> Dict[str, Any]:
-        with _domain_lock:
-            task = self._ensure_domain_task_locked(
-                domain=domain,
-                task_id=task_id,
-                task_type=task_type,
-                payload=payload,
-                progress=progress,
-            )
-            task["max_retries"] = max(0, int(max_retries or 0))
-            return self._domain_task_snapshot(task)
-
-    def update_domain_task(self, domain: str, task_id: str, **fields) -> Optional[Dict[str, Any]]:
-        with _domain_lock:
-            task_type = fields.pop("task_type", None)
-            task = self._ensure_domain_task_locked(
-                domain=domain,
-                task_id=task_id,
-                task_type=str(task_type) if task_type is not None else None,
-            )
-            progress = fields.pop("progress", None)
-            details = fields.pop("details", None)
-            if progress is not None:
-                task.setdefault("progress", {}).update(dict(progress or {}))
-            if details is not None:
-                task["details"] = list(details or [])
-            task.update(fields)
-            if task.get("status") in {"completed", "failed", "cancelled"}:
-                _domain_running.get(str(domain).strip().lower(), set()).discard(str(task_id))
-            return self._domain_task_snapshot(task)
-
-    def append_domain_task_detail(self, domain: str, task_id: str, detail: Dict[str, Any], max_items: int = 500) -> None:
-        with _domain_lock:
-            task = self._ensure_domain_task_locked(domain=domain, task_id=task_id)
-            details = task.setdefault("details", [])
-            details.append(dict(detail or {}))
-            if len(details) > max_items:
-                task["details"] = details[-max_items:]
-
-    def set_domain_task_progress(self, domain: str, task_id: str, **progress_fields) -> None:
-        with _domain_lock:
-            task = self._ensure_domain_task_locked(domain=domain, task_id=task_id)
-            task.setdefault("progress", {}).update(dict(progress_fields or {}))
-
-    def get_domain_task(self, domain: str, task_id: str) -> Optional[Dict[str, Any]]:
-        domain_key = str(domain or "").strip().lower()
-        task_key = str(task_id or "").strip()
-        if not domain_key or not task_key:
-            return None
-        with _domain_lock:
-            task = _domain_tasks.get(domain_key, {}).get(task_key)
-            return self._domain_task_snapshot(task) if task else None
-
-    def list_domain_tasks(self, domain: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
-        safe_limit = max(1, min(500, int(limit or 100)))
-        with _domain_lock:
-            if domain:
-                domain_key = str(domain).strip().lower()
-                tasks = list(_domain_tasks.get(domain_key, {}).values())
-            else:
-                tasks = []
-                for by_domain in _domain_tasks.values():
-                    tasks.extend(by_domain.values())
-            tasks.sort(key=lambda item: float(item.get("_created_ts", 0.0)), reverse=True)
-            return [self._domain_task_snapshot(item) for item in tasks[:safe_limit]]
-
-    def request_domain_task_cancel(self, domain: str, task_id: str) -> Optional[Dict[str, Any]]:
-        with _domain_lock:
-            task = self._ensure_domain_task_locked(domain=domain, task_id=task_id)
-            task["cancel_requested"] = True
-            if str(task.get("status") or "").lower() in {"pending", "running"}:
-                task["message"] = "已提交取消请求，等待任务结束"
-            return self._domain_task_snapshot(task)
-
-    def is_domain_task_cancel_requested(self, domain: str, task_id: str) -> bool:
-        with _domain_lock:
-            task = _domain_tasks.get(str(domain or "").strip().lower(), {}).get(str(task_id or "").strip())
-            return bool(task and task.get("cancel_requested"))
-
-    def request_domain_task_pause(self, domain: str, task_id: str) -> Optional[Dict[str, Any]]:
-        with _domain_lock:
-            task = self._ensure_domain_task_locked(domain=domain, task_id=task_id)
-            status = str(task.get("status") or "").strip().lower()
-            if status in {"completed", "failed", "cancelled"}:
-                return self._domain_task_snapshot(task)
-            task["pause_requested"] = True
-            task["paused"] = True
-            if status in {"pending", "running", "paused"}:
-                task["status"] = "paused"
-                task["message"] = "任务已暂停，等待继续"
-            return self._domain_task_snapshot(task)
-
-    def request_domain_task_resume(self, domain: str, task_id: str) -> Optional[Dict[str, Any]]:
-        with _domain_lock:
-            task = self._ensure_domain_task_locked(domain=domain, task_id=task_id)
-            status = str(task.get("status") or "").strip().lower()
-            if status in {"completed", "failed", "cancelled"}:
-                return self._domain_task_snapshot(task)
-            task["pause_requested"] = False
-            task["paused"] = False
-            if status == "paused":
-                task["status"] = "running"
-                task["message"] = "任务已继续执行"
-            return self._domain_task_snapshot(task)
-
-    def is_domain_task_pause_requested(self, domain: str, task_id: str) -> bool:
-        with _domain_lock:
-            task = _domain_tasks.get(str(domain or "").strip().lower(), {}).get(str(task_id or "").strip())
-            return bool(task and task.get("pause_requested"))
-
-    def request_domain_task_retry(self, domain: str, task_id: str) -> Optional[Dict[str, Any]]:
-        with _domain_lock:
-            task = _domain_tasks.get(str(domain or "").strip().lower(), {}).get(str(task_id or "").strip())
-            if not task:
-                return None
-            task["retry_requested"] = True
-            return self._domain_task_snapshot(task)
-
-    def try_acquire_domain_slot(self, domain: str, task_id: str) -> Tuple[bool, int, int]:
-        domain_key = str(domain or "").strip().lower()
-        task_key = str(task_id or "").strip()
-        with _domain_lock:
-            quota = int(_domain_quotas.get(domain_key, _DOMAIN_DEFAULT_QUOTAS.get(domain_key, 2)))
-            running_set = _domain_running.setdefault(domain_key, set())
-            if task_key in running_set:
-                return True, len(running_set), quota
-            if len(running_set) >= quota:
-                return False, len(running_set), quota
-            running_set.add(task_key)
-            task = self._ensure_domain_task_locked(domain=domain_key, task_id=task_key)
-            task["status"] = "running"
-            task["started_at"] = task.get("started_at") or utcnow_naive().isoformat()
-            task["message"] = task.get("message") or "任务执行中"
-            return True, len(running_set), quota
-
-    def release_domain_slot(self, domain: str, task_id: str) -> None:
-        with _domain_lock:
-            _domain_running.get(str(domain or "").strip().lower(), set()).discard(str(task_id or "").strip())
-
-    def domain_quota_snapshot(self) -> Dict[str, Dict[str, int]]:
-        with _domain_lock:
-            domains = set(_domain_quotas.keys()) | set(_domain_running.keys()) | set(_DOMAIN_DEFAULT_QUOTAS.keys())
-            snapshot: Dict[str, Dict[str, int]] = {}
-            for domain in sorted(domains):
-                quota = int(_domain_quotas.get(domain, _DOMAIN_DEFAULT_QUOTAS.get(domain, 2)))
-                running = len(_domain_running.get(domain, set()))
-                snapshot[domain] = {
-                    "quota": quota,
-                    "running": running,
-                    "available": max(0, quota - running),
-                }
-            return snapshot
 
 
 # 全局实例

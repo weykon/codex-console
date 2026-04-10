@@ -20,27 +20,6 @@ class AccountStatus(str, Enum):
     FAILED = "failed"
 
 
-class AccountLabel(str, Enum):
-    """账号标签（注册类型）"""
-    NONE = "none"
-    MOTHER = "mother"
-    CHILD = "child"
-
-
-class RoleTag(str, Enum):
-    """账号角色标签（增强版）"""
-    NONE = "none"
-    PARENT = "parent"
-    CHILD = "child"
-
-
-class PoolState(str, Enum):
-    """账号池状态"""
-    TEAM_POOL = "team_pool"
-    CANDIDATE_POOL = "candidate_pool"
-    BLOCKED = "blocked"
-
-
 class TaskStatus(str, Enum):
     """任务状态"""
     PENDING = "pending"
@@ -53,65 +32,13 @@ class TaskStatus(str, Enum):
 class EmailServiceType(str, Enum):
     """邮箱服务类型"""
     TEMPMAIL = "tempmail"
-    YYDS_MAIL = "yyds_mail"
     OUTLOOK = "outlook"
     MOE_MAIL = "moe_mail"
     TEMP_MAIL = "temp_mail"
     DUCK_MAIL = "duck_mail"
-    LUCKMAIL = "luckmail"
     FREEMAIL = "freemail"
     IMAP_MAIL = "imap_mail"
-    CLOUDMAIL = "cloudmail"
-
-
-def normalize_account_label(value: str) -> str:
-    """标准化账号标签，未知值降级为 none。"""
-    text = str(value or "").strip().lower()
-    if text in (AccountLabel.MOTHER.value, "parent", "manager", "母号"):
-        return AccountLabel.MOTHER.value
-    if text in (AccountLabel.CHILD.value, "member", "子号"):
-        return AccountLabel.CHILD.value
-    return AccountLabel.NONE.value
-
-
-def normalize_role_tag(value: str) -> str:
-    """标准化角色标签，未知值降级为 none。"""
-    text = str(value or "").strip().lower()
-    if text in (RoleTag.PARENT.value, "mother", "manager", "母号"):
-        return RoleTag.PARENT.value
-    if text in (RoleTag.CHILD.value, "member", "子号"):
-        return RoleTag.CHILD.value
-    return RoleTag.NONE.value
-
-
-def normalize_pool_state(value: str) -> str:
-    """标准化池状态，未知值降级为 candidate_pool。"""
-    text = str(value or "").strip().lower()
-    if text == PoolState.TEAM_POOL.value:
-        return PoolState.TEAM_POOL.value
-    if text == PoolState.BLOCKED.value:
-        return PoolState.BLOCKED.value
-    return PoolState.CANDIDATE_POOL.value
-
-
-def role_tag_to_account_label(role_tag: str) -> str:
-    """role_tag -> account_label 兼容映射。"""
-    normalized = normalize_role_tag(role_tag)
-    if normalized == RoleTag.PARENT.value:
-        return AccountLabel.MOTHER.value
-    if normalized == RoleTag.CHILD.value:
-        return AccountLabel.CHILD.value
-    return AccountLabel.NONE.value
-
-
-def account_label_to_role_tag(account_label: str) -> str:
-    """account_label -> role_tag 兼容映射。"""
-    normalized = normalize_account_label(account_label)
-    if normalized == AccountLabel.MOTHER.value:
-        return RoleTag.PARENT.value
-    if normalized == AccountLabel.CHILD.value:
-        return RoleTag.CHILD.value
-    return RoleTag.NONE.value
+    CLOUD_MAIL = "cloud_mail"
 
 
 # ============================================================================
@@ -119,8 +46,27 @@ def account_label_to_role_tag(account_label: str) -> str:
 # ============================================================================
 
 APP_NAME = "OpenAI/Codex CLI 自动注册系统"
-APP_VERSION = "1.1.2"
+APP_VERSION = "2.0.0"
 APP_DESCRIPTION = "自动注册 OpenAI/Codex CLI 账号的系统"
+DEFAULT_WEBUI_HOST = "0.0.0.0"
+DEFAULT_WEBUI_PORT = 15555
+DEFAULT_WEBUI_LOCAL_HOST = "127.0.0.1"
+
+
+def build_http_url(host: str, port: int, path: str = "") -> str:
+    """构造本地 HTTP URL。"""
+    normalized_path = path if not path or path.startswith("/") else f"/{path}"
+    return f"http://{host}:{port}{normalized_path}"
+
+
+def build_ws_url(host: str, port: int, path: str = "") -> str:
+    """构造本地 WebSocket URL。"""
+    normalized_path = path if not path or path.startswith("/") else f"/{path}"
+    return f"ws://{host}:{port}{normalized_path}"
+
+
+DEFAULT_WEBUI_BASE_URL = build_http_url(DEFAULT_WEBUI_LOCAL_HOST, DEFAULT_WEBUI_PORT)
+DEFAULT_WEBUI_WS_BASE_URL = build_ws_url(DEFAULT_WEBUI_LOCAL_HOST, DEFAULT_WEBUI_PORT)
 
 # ============================================================================
 # OpenAI OAuth 相关常量
@@ -130,15 +76,19 @@ APP_DESCRIPTION = "自动注册 OpenAI/Codex CLI 账号的系统"
 OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 OAUTH_AUTH_URL = "https://auth.openai.com/oauth/authorize"
 OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
-OAUTH_REDIRECT_URI = "http://localhost:1455/auth/callback"
+OAUTH_REDIRECT_URI = build_http_url("localhost", DEFAULT_WEBUI_PORT, "/auth/callback")
 OAUTH_SCOPE = "openid email profile offline_access"
+
+# Codex CLI 专用 OAuth 参数（用于生成 Codex 兼容的 auth.json）
+CODEX_OAUTH_REDIRECT_URI = "http://localhost:1455/auth/callback"
+CODEX_OAUTH_SCOPE = "openid profile email offline_access api.connectors.read api.connectors.invoke"
+CODEX_OAUTH_ORIGINATOR = "codex_cli_rs"
 
 # OpenAI API 端点
 OPENAI_API_ENDPOINTS = {
     "sentinel": "https://sentinel.openai.com/backend-api/sentinel/req",
     "signup": "https://auth.openai.com/api/accounts/authorize/continue",
     "register": "https://auth.openai.com/api/accounts/user/register",
-    "password_verify": "https://auth.openai.com/api/accounts/password/verify",
     "send_otp": "https://auth.openai.com/api/accounts/email-otp/send",
     "validate_otp": "https://auth.openai.com/api/accounts/email-otp/validate",
     "create_account": "https://auth.openai.com/api/accounts/create_account",
@@ -148,8 +98,7 @@ OPENAI_API_ENDPOINTS = {
 # OpenAI 页面类型（用于判断账号状态）
 OPENAI_PAGE_TYPES = {
     "EMAIL_OTP_VERIFICATION": "email_otp_verification",  # 已注册账号，需要 OTP 验证
-    "PASSWORD_REGISTRATION": "create_account_password",  # 新账号，需要设置密码
-    "LOGIN_PASSWORD": "login_password",  # 登录流程，需要输入密码
+    "PASSWORD_REGISTRATION": "password",  # 新账号，需要设置密码
 }
 
 # ============================================================================
@@ -214,7 +163,15 @@ EMAIL_SERVICE_DEFAULTS = {
         "password": "",
         "timeout": 30,
         "max_retries": 3,
-    }
+    },
+    "cloud_mail": {
+        "base_url": "",
+        "admin_email": "",
+        "admin_password": "",
+        "default_domain": "",
+        "timeout": 30,
+        "max_retries": 3,
+    },
 }
 
 # ============================================================================
@@ -250,8 +207,7 @@ OPENAI_VERIFICATION_KEYWORDS = [
 ]
 
 # 密码生成
-PASSWORD_SPECIAL_CHARSET = "!@#$%^&*_-+="
-PASSWORD_CHARSET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" + PASSWORD_SPECIAL_CHARSET
+PASSWORD_CHARSET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 DEFAULT_PASSWORD_LENGTH = 12
 
 # 用户信息生成（用于注册）
@@ -343,8 +299,8 @@ DEFAULT_SETTINGS = [
     ("registration.max_retries", "3", "最大重试次数", "registration"),
     ("registration.timeout", "120", "超时时间（秒）", "registration"),
     ("registration.default_password_length", "12", "默认密码长度", "registration"),
-    ("webui.host", "0.0.0.0", "Web UI 监听主机", "webui"),
-    ("webui.port", "8000", "Web UI 监听端口", "webui"),
+    ("webui.host", DEFAULT_WEBUI_HOST, "Web UI 监听主机", "webui"),
+    ("webui.port", str(DEFAULT_WEBUI_PORT), "Web UI 监听端口", "webui"),
     ("webui.debug", "true", "调试模式", "webui"),
 ]
 

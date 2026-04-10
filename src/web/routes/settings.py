@@ -4,19 +4,14 @@
 
 import logging
 import os
-from typing import Optional
+from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from ...config.settings import get_settings, update_settings
-from ...core.auto_registration import (
-    trigger_auto_registration_check,
-    update_auto_registration_state,
-)
 from ...database import crud
 from ...database.session import get_db
-from ...services import EmailServiceType
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -54,18 +49,6 @@ class RegistrationSettings(BaseModel):
     default_password_length: int = 12
     sleep_min: int = 5
     sleep_max: int = 30
-    entry_flow: str = "native"
-    auto_enabled: bool = False
-    auto_check_interval: int = 60
-    auto_min_ready_auth_files: int = 1
-    auto_email_service_type: str = "tempmail"
-    auto_email_service_id: int = 0
-    auto_proxy: Optional[str] = None
-    auto_interval_min: int = 5
-    auto_interval_max: int = 30
-    auto_concurrency: int = 1
-    auto_mode: str = "pipeline"
-    auto_cpa_service_id: int = 0
 
 
 class WebUISettings(BaseModel):
@@ -83,22 +66,12 @@ class AllSettings(BaseModel):
     webui: WebUISettings
 
 
-class AutoQuickRefreshSettingsRequest(BaseModel):
-    enabled: bool = False
-    interval_minutes: int = 30
-    retry_limit: int = 2
-    run_now: bool = False
-
-
 # ============== API Endpoints ==============
 
 @router.get("")
 async def get_all_settings():
     """获取所有设置"""
     settings = get_settings()
-
-    entry_flow_raw = str(settings.registration_entry_flow or "native").strip().lower()
-    entry_flow = "abcard" if entry_flow_raw == "abcard" else "native"
 
     return {
         "proxy": {
@@ -120,18 +93,6 @@ async def get_all_settings():
             "default_password_length": settings.registration_default_password_length,
             "sleep_min": settings.registration_sleep_min,
             "sleep_max": settings.registration_sleep_max,
-            "entry_flow": entry_flow,
-            "auto_enabled": settings.registration_auto_enabled,
-            "auto_check_interval": settings.registration_auto_check_interval,
-            "auto_min_ready_auth_files": settings.registration_auto_min_ready_auth_files,
-            "auto_email_service_type": settings.registration_auto_email_service_type,
-            "auto_email_service_id": settings.registration_auto_email_service_id,
-            "auto_proxy": settings.registration_auto_proxy,
-            "auto_interval_min": settings.registration_auto_interval_min,
-            "auto_interval_max": settings.registration_auto_interval_max,
-            "auto_concurrency": settings.registration_auto_concurrency,
-            "auto_mode": settings.registration_auto_mode,
-            "auto_cpa_service_id": settings.registration_auto_cpa_service_id,
         },
         "webui": {
             "host": settings.webui_host,
@@ -140,81 +101,16 @@ async def get_all_settings():
             "has_access_password": bool(settings.webui_access_password and settings.webui_access_password.get_secret_value()),
         },
         "tempmail": {
-            "enabled": settings.tempmail_enabled,
-            "api_url": settings.tempmail_base_url,
             "base_url": settings.tempmail_base_url,
             "timeout": settings.tempmail_timeout,
             "max_retries": settings.tempmail_max_retries,
         },
-        "yyds_mail": {
-            "enabled": settings.yyds_mail_enabled,
-            "api_url": settings.yyds_mail_base_url,
-            "base_url": settings.yyds_mail_base_url,
-            "default_domain": settings.yyds_mail_default_domain,
-            "timeout": settings.yyds_mail_timeout,
-            "max_retries": settings.yyds_mail_max_retries,
-            "has_api_key": bool(settings.yyds_mail_api_key and settings.yyds_mail_api_key.get_secret_value()),
-        },
         "email_code": {
             "timeout": settings.email_code_timeout,
             "poll_interval": settings.email_code_poll_interval,
+            "resend_max_retries": settings.email_code_resend_max_retries,
+            "non_openai_sender_resend_max_retries": settings.email_code_non_openai_sender_resend_max_retries,
         },
-    }
-
-
-@router.get("/auto-quick-refresh")
-async def get_auto_quick_refresh_settings():
-    settings = get_settings()
-    from ..auto_quick_refresh_scheduler import auto_quick_refresh_scheduler
-
-    runtime = auto_quick_refresh_scheduler.snapshot()
-    return {
-        "enabled": bool(settings.auto_quick_refresh_enabled),
-        "interval_minutes": int(settings.auto_quick_refresh_interval_minutes),
-        "retry_limit": int(settings.auto_quick_refresh_retry_limit),
-        "runtime": runtime,
-    }
-
-
-@router.post("/auto-quick-refresh")
-async def update_auto_quick_refresh_settings(request: AutoQuickRefreshSettingsRequest):
-    from ..auto_quick_refresh_scheduler import (
-        AUTO_MAX_RETRY_LIMIT,
-        AUTO_MAX_INTERVAL_MINUTES,
-        AUTO_MIN_INTERVAL_MINUTES,
-        auto_quick_refresh_scheduler,
-    )
-
-    interval_minutes = int(request.interval_minutes)
-    retry_limit = int(request.retry_limit)
-
-    if interval_minutes < AUTO_MIN_INTERVAL_MINUTES or interval_minutes > AUTO_MAX_INTERVAL_MINUTES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"interval_minutes must be between {AUTO_MIN_INTERVAL_MINUTES} and {AUTO_MAX_INTERVAL_MINUTES}",
-        )
-    if retry_limit < 0 or retry_limit > AUTO_MAX_RETRY_LIMIT:
-        raise HTTPException(
-            status_code=400,
-            detail=f"retry_limit must be between 0 and {AUTO_MAX_RETRY_LIMIT}",
-        )
-
-    update_settings(
-        auto_quick_refresh_enabled=bool(request.enabled),
-        auto_quick_refresh_interval_minutes=interval_minutes,
-        auto_quick_refresh_retry_limit=retry_limit,
-    )
-
-    runtime = auto_quick_refresh_scheduler.notify_schedule_updated()
-    if request.enabled and bool(request.run_now):
-        runtime = auto_quick_refresh_scheduler.request_run_now(reason="settings_save")
-
-    return {
-        "success": True,
-        "enabled": bool(request.enabled),
-        "interval_minutes": interval_minutes,
-        "retry_limit": retry_limit,
-        "runtime": runtime,
     }
 
 
@@ -308,128 +204,25 @@ async def get_registration_settings():
     """获取注册设置"""
     settings = get_settings()
 
-    entry_flow_raw = str(settings.registration_entry_flow or "native").strip().lower()
-    entry_flow = "abcard" if entry_flow_raw == "abcard" else "native"
-
     return {
         "max_retries": settings.registration_max_retries,
         "timeout": settings.registration_timeout,
         "default_password_length": settings.registration_default_password_length,
         "sleep_min": settings.registration_sleep_min,
         "sleep_max": settings.registration_sleep_max,
-        "entry_flow": entry_flow,
-        "auto_enabled": settings.registration_auto_enabled,
-        "auto_check_interval": settings.registration_auto_check_interval,
-        "auto_min_ready_auth_files": settings.registration_auto_min_ready_auth_files,
-        "auto_email_service_type": settings.registration_auto_email_service_type,
-        "auto_email_service_id": settings.registration_auto_email_service_id,
-        "auto_proxy": settings.registration_auto_proxy,
-        "auto_interval_min": settings.registration_auto_interval_min,
-        "auto_interval_max": settings.registration_auto_interval_max,
-        "auto_concurrency": settings.registration_auto_concurrency,
-        "auto_mode": settings.registration_auto_mode,
-        "auto_cpa_service_id": settings.registration_auto_cpa_service_id,
     }
 
 
 @router.post("/registration")
 async def update_registration_settings(request: RegistrationSettings):
     """更新注册设置"""
-    if request.timeout < 30 or request.timeout > 600:
-        raise HTTPException(status_code=400, detail="注册超时时间必须在 30-600 秒之间")
-
-    if request.default_password_length < 8 or request.default_password_length > 64:
-        raise HTTPException(status_code=400, detail="密码长度必须在 8-64 之间")
-
-    if request.sleep_min < 1 or request.sleep_max < request.sleep_min:
-        raise HTTPException(status_code=400, detail="注册等待时间参数无效")
-
-    flow_raw = (request.entry_flow or "native").strip().lower()
-    # 兼容旧前端历史值：outlook -> native（Outlook 邮箱会在运行时自动走 outlook 链路）。
-    flow = "native" if flow_raw == "outlook" else flow_raw
-    if flow not in {"native", "abcard"}:
-        raise HTTPException(status_code=400, detail="entry_flow 仅支持 native / abcard")
-
-    if request.auto_check_interval < 5 or request.auto_check_interval > 3600:
-        raise HTTPException(status_code=400, detail="自动注册检查间隔必须在 5-3600 秒之间")
-
-    if request.auto_min_ready_auth_files < 1 or request.auto_min_ready_auth_files > 10000:
-        raise HTTPException(status_code=400, detail="自动注册保底数量必须在 1-10000 之间")
-
-    try:
-        EmailServiceType(request.auto_email_service_type)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="自动注册邮箱服务类型无效") from exc
-
-    normalized_auto_email_service_type = (
-        "imap_mail" if request.auto_email_service_type == "catchall_imap" else request.auto_email_service_type
-    )
-
-    if request.auto_interval_min < 0 or request.auto_interval_max < request.auto_interval_min:
-        raise HTTPException(status_code=400, detail="自动注册间隔时间参数无效")
-
-    if request.auto_concurrency < 1 or request.auto_concurrency > 100:
-        raise HTTPException(status_code=400, detail="自动注册并发数必须在 1-100 之间")
-
-    if request.auto_mode not in ("parallel", "pipeline"):
-        raise HTTPException(status_code=400, detail="自动注册模式必须为 parallel 或 pipeline")
-
-    if request.auto_enabled and request.auto_cpa_service_id <= 0:
-        raise HTTPException(status_code=400, detail="启用自动注册时必须选择一个 CPA 服务")
-
-    with get_db() as db:
-        if request.auto_enabled:
-            cpa_service = crud.get_cpa_service_by_id(db, request.auto_cpa_service_id)
-            if not cpa_service or not cpa_service.enabled:
-                raise HTTPException(status_code=400, detail="自动注册选择的 CPA 服务不存在或已禁用")
-
-        if request.auto_email_service_id > 0:
-            email_service = crud.get_email_service_by_id(db, request.auto_email_service_id)
-            if not email_service or not email_service.enabled:
-                raise HTTPException(status_code=400, detail="自动注册选择的邮箱服务不存在或已禁用")
-            normalized_service_type = (
-                "imap_mail" if email_service.service_type == "catchall_imap" else email_service.service_type
-            )
-            if normalized_service_type != normalized_auto_email_service_type:
-                raise HTTPException(status_code=400, detail="自动注册邮箱服务类型与指定服务不匹配")
-
     update_settings(
         registration_max_retries=request.max_retries,
         registration_timeout=request.timeout,
         registration_default_password_length=request.default_password_length,
         registration_sleep_min=request.sleep_min,
         registration_sleep_max=request.sleep_max,
-        registration_entry_flow=flow,
-        registration_auto_enabled=request.auto_enabled,
-        registration_auto_check_interval=request.auto_check_interval,
-        registration_auto_min_ready_auth_files=request.auto_min_ready_auth_files,
-        registration_auto_email_service_type=normalized_auto_email_service_type,
-        registration_auto_email_service_id=max(0, request.auto_email_service_id),
-        registration_auto_proxy=(request.auto_proxy or "").strip(),
-        registration_auto_interval_min=request.auto_interval_min,
-        registration_auto_interval_max=request.auto_interval_max,
-        registration_auto_concurrency=request.auto_concurrency,
-        registration_auto_mode=request.auto_mode,
-        registration_auto_cpa_service_id=max(0, request.auto_cpa_service_id),
     )
-
-    if request.auto_enabled:
-        update_auto_registration_state(
-            enabled=True,
-            status="checking",
-            message="自动注册设置已更新，正在立即检查库存",
-            target_ready_count=request.auto_min_ready_auth_files,
-        )
-        trigger_auto_registration_check()
-    else:
-        update_auto_registration_state(
-            enabled=False,
-            status="disabled",
-            message="自动注册已禁用",
-            current_batch_id=None,
-            current_ready_count=None,
-            target_ready_count=request.auto_min_ready_auth_files,
-        )
 
     return {"success": True, "message": "注册设置已更新"}
 
@@ -517,107 +310,15 @@ async def backup_database():
     }
 
 
-@router.post("/database/import")
-async def import_database(file: UploadFile = File(...)):
-    """导入数据库（自动备份后覆盖当前 SQLite 文件）"""
-    import shutil
-    import tempfile
-    from datetime import datetime
-    from pathlib import Path as FilePath
-    from ...database.session import get_session_manager
-
-    settings = get_settings()
-
-    db_path = settings.database_url
-    if not db_path.startswith("sqlite:///"):
-        raise HTTPException(status_code=400, detail="当前仅支持 SQLite 数据库导入")
-
-    db_path = db_path[10:]
-    db_file = FilePath(db_path)
-
-    # 校验上传扩展名
-    filename = (file.filename or "").lower()
-    allowed_ext = (".db", ".sqlite", ".sqlite3")
-    if filename and not filename.endswith(allowed_ext):
-        raise HTTPException(status_code=400, detail="仅支持 .db / .sqlite / .sqlite3 文件")
-
-    if not db_file.exists():
-        raise HTTPException(status_code=404, detail="数据库文件不存在")
-
-    # 先落地到临时文件，再校验头，避免脏写
-    temp_path = None
-    try:
-        db_file.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            prefix="db_import_",
-            suffix=".db",
-            dir=str(db_file.parent),
-            delete=False
-        ) as tmp:
-            temp_path = FilePath(tmp.name)
-            while True:
-                chunk = await file.read(1024 * 1024)
-                if not chunk:
-                    break
-                tmp.write(chunk)
-
-        if not temp_path.exists() or temp_path.stat().st_size < 100:
-            raise HTTPException(status_code=400, detail="导入文件无效或为空")
-
-        # SQLite 文件头校验
-        with temp_path.open("rb") as f:
-            header = f.read(16)
-        if not header.startswith(b"SQLite format 3\x00"):
-            raise HTTPException(status_code=400, detail="文件不是有效的 SQLite 数据库")
-
-        # 先释放数据库连接，避免 Windows 下文件被占用
-        session_manager = get_session_manager()
-        session_manager.engine.dispose()
-
-        # 导入前自动备份
-        backup_dir = db_file.parent / "backups"
-        backup_dir.mkdir(exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_path = backup_dir / f"database_backup_before_import_{timestamp}.db"
-        shutil.copy2(db_file, backup_path)
-
-        # 清理 WAL/SHM，避免替换后出现旧事务残留
-        wal_file = FilePath(f"{db_file}-wal")
-        shm_file = FilePath(f"{db_file}-shm")
-        for sidecar in (wal_file, shm_file):
-            try:
-                if sidecar.exists():
-                    sidecar.unlink()
-            except Exception:
-                logger.warning("清理 SQLite 附属文件失败: %s", sidecar)
-
-        os.replace(str(temp_path), str(db_file))
-
-        logger.info("数据库导入成功: file=%s backup=%s", file.filename, backup_path)
-        return {
-            "success": True,
-            "message": "数据库导入成功",
-            "backup_path": str(backup_path),
-        }
-    finally:
-        await file.close()
-        if temp_path and temp_path.exists():
-            try:
-                temp_path.unlink()
-            except Exception:
-                pass
-
-
 @router.post("/database/cleanup")
 async def cleanup_database(
     days: int = 30,
     keep_failed: bool = True
 ):
     """清理过期数据"""
-    from datetime import timedelta
-    from ...core.timezone_utils import utcnow_naive
+    from datetime import datetime, timedelta
 
-    cutoff_date = utcnow_naive() - timedelta(days=days)
+    cutoff_date = datetime.utcnow() - timedelta(days=days)
 
     with get_db() as db:
         from ...database.models import RegistrationTask
@@ -680,17 +381,15 @@ async def get_recent_logs(
 class TempmailSettings(BaseModel):
     """临时邮箱设置"""
     api_url: Optional[str] = None
-    enabled: Optional[bool] = None
-    yyds_api_url: Optional[str] = None
-    yyds_api_key: Optional[str] = None
-    yyds_default_domain: Optional[str] = None
-    yyds_enabled: Optional[bool] = None
+    enabled: bool = True
 
 
 class EmailCodeSettings(BaseModel):
     """验证码等待设置"""
     timeout: int = 120  # 验证码等待超时（秒）
     poll_interval: int = 3  # 验证码轮询间隔（秒）
+    resend_max_retries: int = 2  # 收件箱未找到验证码时最多重新发送次数
+    non_openai_sender_resend_max_retries: int = 1  # 非 OpenAI 发件人导致的最多重新发送次数
 
 
 @router.get("/tempmail")
@@ -699,20 +398,10 @@ async def get_tempmail_settings():
     settings = get_settings()
 
     return {
-        "tempmail": {
-            "api_url": settings.tempmail_base_url,
-            "timeout": settings.tempmail_timeout,
-            "max_retries": settings.tempmail_max_retries,
-            "enabled": settings.tempmail_enabled,
-        },
-        "yyds_mail": {
-            "api_url": settings.yyds_mail_base_url,
-            "default_domain": settings.yyds_mail_default_domain,
-            "timeout": settings.yyds_mail_timeout,
-            "max_retries": settings.yyds_mail_max_retries,
-            "enabled": settings.yyds_mail_enabled,
-            "has_api_key": bool(settings.yyds_mail_api_key and settings.yyds_mail_api_key.get_secret_value()),
-        },
+        "api_url": settings.tempmail_base_url,
+        "timeout": settings.tempmail_timeout,
+        "max_retries": settings.tempmail_max_retries,
+        "enabled": True  # 临时邮箱默认可用
     }
 
 
@@ -723,16 +412,6 @@ async def update_tempmail_settings(request: TempmailSettings):
 
     if request.api_url:
         update_dict["tempmail_base_url"] = request.api_url
-    if request.enabled is not None:
-        update_dict["tempmail_enabled"] = request.enabled
-    if request.yyds_api_url is not None:
-        update_dict["yyds_mail_base_url"] = request.yyds_api_url
-    if request.yyds_api_key is not None:
-        update_dict["yyds_mail_api_key"] = request.yyds_api_key
-    if request.yyds_default_domain is not None:
-        update_dict["yyds_mail_default_domain"] = request.yyds_default_domain
-    if request.yyds_enabled is not None:
-        update_dict["yyds_mail_enabled"] = request.yyds_enabled
 
     update_settings(**update_dict)
 
@@ -748,6 +427,8 @@ async def get_email_code_settings():
     return {
         "timeout": settings.email_code_timeout,
         "poll_interval": settings.email_code_poll_interval,
+        "resend_max_retries": settings.email_code_resend_max_retries,
+        "non_openai_sender_resend_max_retries": settings.email_code_non_openai_sender_resend_max_retries,
     }
 
 
@@ -760,9 +441,16 @@ async def update_email_code_settings(request: EmailCodeSettings):
     if request.poll_interval < 1 or request.poll_interval > 30:
         raise HTTPException(status_code=400, detail="轮询间隔必须在 1-30 秒之间")
 
+    if request.resend_max_retries < 0 or request.resend_max_retries > 10:
+        raise HTTPException(status_code=400, detail="重发次数必须在 0-10 之间")
+    if request.non_openai_sender_resend_max_retries < 0 or request.non_openai_sender_resend_max_retries > 10:
+        raise HTTPException(status_code=400, detail="非 OpenAI 发件人重发次数必须在 0-10 之间")
+
     update_settings(
         email_code_timeout=request.timeout,
         email_code_poll_interval=request.poll_interval,
+        email_code_resend_max_retries=request.resend_max_retries,
+        email_code_non_openai_sender_resend_max_retries=request.non_openai_sender_resend_max_retries,
     )
 
     return {"success": True, "message": "验证码等待设置已更新"}
@@ -782,6 +470,11 @@ class ProxyCreateRequest(BaseModel):
     priority: int = 0
 
 
+class ProxyBatchDeleteRequest(BaseModel):
+    """批量删除代理请求"""
+    ids: List[int]
+
+
 class ProxyUpdateRequest(BaseModel):
     """更新代理请求"""
     name: Optional[str] = None
@@ -793,6 +486,58 @@ class ProxyUpdateRequest(BaseModel):
     enabled: Optional[bool] = None
     priority: Optional[int] = None
 
+def _test_proxy_connectivity(proxy_url: str) -> dict:
+    """测试代理连通性并返回统一结果。"""
+    import time
+    from curl_cffi import requests as cffi_requests
+
+    test_url = "https://api.ipify.org?format=json"
+    start_time = time.time()
+
+    proxies_dict = {
+        "http": proxy_url,
+        "https": proxy_url
+    }
+
+    response = cffi_requests.get(
+        test_url,
+        proxies=proxies_dict,
+        timeout=3,
+        impersonate="chrome110"
+    )
+
+    elapsed_time = time.time() - start_time
+    if response.status_code == 200:
+        ip_info = response.json()
+        return {
+            "success": True,
+            "ip": ip_info.get("ip", ""),
+            "response_time": round(elapsed_time * 1000),
+            "message": f"代理连接成功，出口 IP: {ip_info.get('ip', 'unknown')}"
+        }
+
+    return {
+        "success": False,
+        "message": f"状态码: {response.status_code}"
+    }
+
+
+def _auto_disable_proxy_on_failure(db, proxy, message: str) -> dict:
+    """代理测试失败时自动禁用，并返回统一提示。"""
+    auto_disabled = False
+    if proxy.enabled:
+        crud.update_proxy(db, proxy.id, enabled=False)
+        auto_disabled = True
+
+    final_message = message
+    if auto_disabled:
+        final_message = f"{message}，已自动禁用"
+
+    return {
+        "success": False,
+        "auto_disabled": auto_disabled,
+        "message": final_message,
+    }
 
 @router.get("/proxies")
 async def get_proxies_list(enabled: Optional[bool] = None):
@@ -821,6 +566,35 @@ async def create_proxy_item(request: ProxyCreateRequest):
             priority=request.priority
         )
         return {"success": True, "proxy": proxy.to_dict()}
+
+
+@router.post("/proxies/batch-delete")
+async def batch_delete_proxies(request: ProxyBatchDeleteRequest):
+    """批量删除代理。"""
+    if not request.ids:
+        raise HTTPException(status_code=400, detail="请至少选择一个代理")
+
+    with get_db() as db:
+        result = crud.delete_proxies_by_ids(db, request.ids)
+        return {
+            "success": True,
+            "requested_count": result["requested_count"],
+            "deleted_count": result["deleted_count"],
+            "not_found_ids": result["not_found_ids"],
+            "message": f"已删除 {result['deleted_count']} 个代理",
+        }
+
+
+@router.post("/proxies/delete-disabled")
+async def delete_disabled_proxy_items():
+    """删除所有已禁用代理。"""
+    with get_db() as db:
+        deleted_count = crud.delete_disabled_proxies(db)
+        return {
+            "success": True,
+            "deleted_count": deleted_count,
+            "message": f"已删除 {deleted_count} 个禁用代理",
+        }
 
 
 @router.get("/proxies/{proxy_id}")
@@ -879,6 +653,94 @@ async def set_proxy_default(proxy_id: int):
         if not proxy:
             raise HTTPException(status_code=404, detail="代理不存在")
         return {"success": True, "proxy": proxy.to_dict()}
+
+
+@router.post("/proxies/{proxy_id}/unset-default")
+async def unset_proxy_default(proxy_id: int):
+    """取消指定代理的默认标记"""
+    with get_db() as db:
+        proxy = crud.unset_proxy_default(db, proxy_id)
+        if not proxy:
+            raise HTTPException(status_code=404, detail="代理不存在")
+        return {"success": True, "proxy": proxy.to_dict()}
+
+
+class ProxyBatchImportRequest(BaseModel):
+    """批量导入代理请求"""
+    lines: str
+
+
+def _parse_proxy_line(line: str):
+    """
+    解析单行代理字符串，支持格式：
+    - host:port
+    - type://host:port
+    - type://user:pass@host:port
+    - 名称|type://user:pass@host:port
+    """
+    from urllib.parse import urlparse
+
+    name = None
+    # 解析可选名称前缀（竖线分隔）
+    if '|' in line:
+        name, line = line.split('|', 1)
+        name = name.strip()
+        line = line.strip()
+
+    # 若没有协议头，默认补 http://
+    if '://' not in line:
+        line = 'http://' + line
+
+    parsed = urlparse(line)
+    proxy_type = (parsed.scheme or 'http').lower()
+    if proxy_type not in ('http', 'https', 'socks5', 'socks4'):
+        proxy_type = 'http'
+
+    host = parsed.hostname
+    port = parsed.port
+    username = parsed.username or None
+    password = parsed.password or None
+
+    if not host or not port:
+        raise ValueError(f"无法解析 host/port")
+
+    if not name:
+        name = f"{proxy_type}://{host}:{port}"
+
+    return name, proxy_type, host, port, username, password
+
+
+@router.post("/proxies/batch-import")
+async def batch_import_proxies(request: ProxyBatchImportRequest):
+    """
+    批量导入代理，每行格式支持：
+    - host:port
+    - type://host:port
+    - type://user:pass@host:port
+    - 名称|type://user:pass@host:port
+    """
+    results = {"success": 0, "failed": 0, "errors": []}
+    with get_db() as db:
+        for raw_line in request.lines.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            try:
+                name, proxy_type, host, port, username, password = _parse_proxy_line(line)
+                crud.create_proxy(
+                    db,
+                    name=name,
+                    type=proxy_type,
+                    host=host,
+                    port=port,
+                    username=username,
+                    password=password,
+                )
+                results["success"] += 1
+            except Exception as e:
+                results["failed"] += 1
+                results["errors"].append(f"{raw_line}: {e}")
+    return results
 
 
 @router.post("/proxies/{proxy_id}/test")
@@ -1021,6 +883,10 @@ async def disable_proxy(proxy_id: int):
 class OutlookSettings(BaseModel):
     """Outlook 设置"""
     default_client_id: Optional[str] = None
+    provider_priority: Optional[List[str]] = None
+    health_failure_threshold: Optional[int] = None
+    health_disable_duration: Optional[int] = None
+    require_recipient_match: Optional[bool] = None
 
 
 @router.get("/outlook")
@@ -1033,6 +899,7 @@ async def get_outlook_settings():
         "provider_priority": settings.outlook_provider_priority,
         "health_failure_threshold": settings.outlook_health_failure_threshold,
         "health_disable_duration": settings.outlook_health_disable_duration,
+        "require_recipient_match": settings.outlook_require_recipient_match,
     }
 
 
@@ -1043,6 +910,14 @@ async def update_outlook_settings(request: OutlookSettings):
 
     if request.default_client_id is not None:
         update_dict["outlook_default_client_id"] = request.default_client_id
+    if request.provider_priority is not None:
+        update_dict["outlook_provider_priority"] = request.provider_priority
+    if request.health_failure_threshold is not None:
+        update_dict["outlook_health_failure_threshold"] = request.health_failure_threshold
+    if request.health_disable_duration is not None:
+        update_dict["outlook_health_disable_duration"] = request.health_disable_duration
+    if request.require_recipient_match is not None:
+        update_dict["outlook_require_recipient_match"] = request.require_recipient_match
 
     if update_dict:
         update_settings(**update_dict)

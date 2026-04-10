@@ -4,7 +4,7 @@
 
 import logging
 import re
-from typing import Optional, List, Dict, Any
+from typing import Optional, List
 
 from ...config.constants import (
     OTP_CODE_SIMPLE_PATTERN,
@@ -33,6 +33,7 @@ class EmailParser:
         self,
         email: EmailMessage,
         target_email: Optional[str] = None,
+        require_recipient_match: bool = True,
     ) -> bool:
         """
         判断是否为 OpenAI 验证邮件
@@ -60,9 +61,31 @@ class EmailParser:
             logger.debug(f"邮件未包含验证关键词: {subject[:50]}")
             return False
 
-        # 3. 收件人检查已移除：别名邮件的 IMAP 头中收件人可能不匹配，只靠发件人+关键词判断
+        # 3. 可选收件人检查：默认启用，别名或转发场景可通过配置关闭
+        if require_recipient_match and target_email:
+            if not self._recipient_matches_target(email, target_email):
+                logger.debug("邮件收件人不匹配目标邮箱")
+                return False
+
         logger.debug(f"识别为 OpenAI 验证邮件: {subject[:50]}")
         return True
+
+    def _recipient_matches_target(self, email: EmailMessage, target_email: str) -> bool:
+        target = (target_email or "").strip().lower()
+        if not target:
+            return True
+
+        for recipient in email.recipients or []:
+            normalized = str(recipient or "").strip().lower()
+            if not normalized:
+                continue
+            if target == normalized:
+                return True
+            # 兼容 "Name <user@example.com>" 形式
+            if f"<{target}>" in normalized:
+                return True
+
+        return False
 
     def extract_verification_code(
         self,
@@ -123,13 +146,21 @@ class EmailParser:
             return match.group(1)
         return None
 
+    def has_openai_sender(self, emails: List[EmailMessage]) -> bool:
+        """判断邮件批次中是否至少存在一封 OpenAI 发件人邮件。"""
+        for email in emails:
+            sender = (email.sender or "").lower()
+            if any(pattern in sender for pattern in OPENAI_EMAIL_SENDERS):
+                return True
+        return False
+
     def find_verification_code_in_emails(
         self,
         emails: List[EmailMessage],
         target_email: Optional[str] = None,
         min_timestamp: int = 0,
+        require_recipient_match: bool = True,
         used_codes: Optional[set] = None,
-        used_fingerprints: Optional[set] = None,
     ) -> Optional[str]:
         """
         从邮件列表中查找验证码
@@ -138,17 +169,12 @@ class EmailParser:
             emails: 邮件列表
             target_email: 目标邮箱地址
             min_timestamp: 最小时间戳（用于过滤旧邮件）
-            used_codes: 兼容旧参数（仅在无邮件 ID/时间时兜底）
-            used_fingerprints: 已使用邮件指纹集合，指纹规则为 "时间戳|邮件ID|验证码"
+            used_codes: 已使用的验证码集合（用于去重）
 
         Returns:
             验证码字符串，如果未找到返回 None
         """
-        # 注意：不能用 `or set()`，否则传入空集合时会被替换，导致跨轮询去重失效。
-        if used_codes is None:
-            used_codes = set()
-        if used_fingerprints is None:
-            used_fingerprints = set()
+        used_codes = used_codes or set()
 
         for email in emails:
             # 时间戳过滤
@@ -158,28 +184,21 @@ class EmailParser:
                     continue
 
             # 检查是否是 OpenAI 验证邮件
-            if not self.is_openai_verification_email(email, target_email):
+            if not self.is_openai_verification_email(
+                email,
+                target_email,
+                require_recipient_match=require_recipient_match,
+            ):
                 continue
 
             # 提取验证码
             code = self.extract_verification_code(email)
             if code:
-                mail_ts = int(email.received_timestamp or 0)
-                mail_id = str(email.id or "").strip() or "-"
-                fingerprint = f"{mail_ts}|{mail_id}|{code}"
-
-                # 主去重：时间 + 邮件ID + 验证码
-                if fingerprint in used_fingerprints:
-                    logger.debug(f"跳过已使用验证码指纹: {fingerprint}")
+                # 去重检查
+                if code in used_codes:
+                    logger.debug(f"跳过已使用的验证码: {code}")
                     continue
 
-                # 兜底去重：如果邮件没有 ID 且没有时间戳，才退回到纯验证码去重
-                if mail_id == "-" and mail_ts <= 0 and code in used_codes:
-                    logger.debug(f"跳过已使用的验证码(兜底): {code}")
-                    continue
-
-                used_fingerprints.add(fingerprint)
-                used_codes.add(code)
                 logger.info(
                     f"[{target_email or 'unknown'}] 找到验证码: {code}, "
                     f"邮件主题: {email.subject[:30]}"
