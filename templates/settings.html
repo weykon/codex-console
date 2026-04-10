@@ -407,6 +407,23 @@ MyProxy|socks5://user:pass@host:port"></textarea>
                             </div>
                             <div class="form-row">
                                 <div class="form-group">
+                                    <label for="sub2api-service-group">默认分组</label>
+                                    <select id="sub2api-service-group">
+                                        <option value="">-- 不指定 --</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="sub2api-service-proxy">默认代理</label>
+                                    <select id="sub2api-service-proxy">
+                                        <option value="">-- 不指定 --</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="form-group" style="margin-top:-4px;">
+                                <button type="button" class="btn btn-secondary btn-sm" id="refresh-sub2api-gp-btn">🔄 刷新分组/代理</button>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group">
                                     <label for="sub2api-service-priority">优先级</label>
                                     <input type="number" id="sub2api-service-priority" value="0" min="0">
                                     <p class="hint">数字越小优先级越高</p>

@@ -194,6 +194,90 @@ def batch_upload_to_sub2api(
     return results
 
 
+def fetch_sub2api_groups(api_url: str, api_key: str) -> Tuple[bool, list | str]:
+    """
+    从 Sub2API 获取分组列表 GET /api/v1/admin/groups
+
+    Returns:
+        (成功标志, items 列表或错误消息)
+    """
+    if not api_url:
+        return False, "API URL 不能为空"
+    if not api_key:
+        return False, "API Key 不能为空"
+
+    url = api_url.rstrip("/") + "/api/v1/admin/groups"
+    headers = {"x-api-key": api_key}
+
+    try:
+        response = cffi_requests.get(
+            url,
+            headers=headers,
+            proxies=None,
+            timeout=10,
+            impersonate="chrome110",
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            items = data.get("data", {}).get("items", [])
+            return True, items
+        if response.status_code == 401:
+            return False, "API Key 无效"
+        if response.status_code == 403:
+            return False, "权限不足"
+        return False, f"服务器返回: HTTP {response.status_code}"
+
+    except cffi_requests.exceptions.ConnectionError:
+        return False, "无法连接到服务器"
+    except cffi_requests.exceptions.Timeout:
+        return False, "连接超时"
+    except Exception as e:
+        return False, f"获取分组失败: {str(e)}"
+
+
+def fetch_sub2api_proxies(api_url: str, api_key: str) -> Tuple[bool, list | str]:
+    """
+    从 Sub2API 获取代理列表 GET /api/v1/admin/proxies
+
+    Returns:
+        (成功标志, items 列表或错误消息)
+    """
+    if not api_url:
+        return False, "API URL 不能为空"
+    if not api_key:
+        return False, "API Key 不能为空"
+
+    url = api_url.rstrip("/") + "/api/v1/admin/proxies"
+    headers = {"x-api-key": api_key}
+
+    try:
+        response = cffi_requests.get(
+            url,
+            headers=headers,
+            proxies=None,
+            timeout=10,
+            impersonate="chrome110",
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            items = data.get("data", {}).get("items", [])
+            return True, items
+        if response.status_code == 401:
+            return False, "API Key 无效"
+        if response.status_code == 403:
+            return False, "权限不足"
+        return False, f"服务器返回: HTTP {response.status_code}"
+
+    except cffi_requests.exceptions.ConnectionError:
+        return False, "无法连接到服务器"
+    except cffi_requests.exceptions.Timeout:
+        return False, "连接超时"
+    except Exception as e:
+        return False, f"获取代理失败: {str(e)}"
+
+
 def test_sub2api_connection(api_url: str, api_key: str) -> Tuple[bool, str]:
     """
     测试 Sub2API 连接（GET /api/v1/admin/accounts/data 探活）
