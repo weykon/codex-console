@@ -163,6 +163,8 @@ class Sub2ApiService(Base):
     api_key = Column(Text, nullable=False)  # x-api-key
     enabled = Column(Boolean, default=True)
     priority = Column(Integer, default=0)  # 优先级
+    default_group_id = Column(Integer, nullable=True)  # 上传时默认绑定的 group_id
+    default_proxy_id = Column(Integer, nullable=True)  # 上传时默认绑定的 proxy_id
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

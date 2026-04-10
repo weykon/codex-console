@@ -21,6 +21,8 @@ class Sub2ApiServiceCreate(BaseModel):
     api_key: str
     enabled: bool = True
     priority: int = 0
+    default_group_id: Optional[int] = None
+    default_proxy_id: Optional[int] = None
 
 
 class Sub2ApiServiceUpdate(BaseModel):
@@ -29,6 +31,8 @@ class Sub2ApiServiceUpdate(BaseModel):
     api_key: Optional[str] = None
     enabled: Optional[bool] = None
     priority: Optional[int] = None
+    default_group_id: Optional[int] = None
+    default_proxy_id: Optional[int] = None
 
 
 class Sub2ApiServiceResponse(BaseModel):
@@ -38,6 +42,8 @@ class Sub2ApiServiceResponse(BaseModel):
     has_key: bool
     enabled: bool
     priority: int
+    default_group_id: Optional[int] = None
+    default_proxy_id: Optional[int] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -55,6 +61,8 @@ class Sub2ApiUploadRequest(BaseModel):
     service_id: Optional[int] = None
     concurrency: int = 3
     priority: int = 50
+    group_id: Optional[int] = None
+    proxy_id: Optional[int] = None
 
 
 def _to_response(svc) -> Sub2ApiServiceResponse:
@@ -65,6 +73,8 @@ def _to_response(svc) -> Sub2ApiServiceResponse:
         has_key=bool(svc.api_key),
         enabled=svc.enabled,
         priority=svc.priority,
+        default_group_id=svc.default_group_id,
+        default_proxy_id=svc.default_proxy_id,
         created_at=svc.created_at.isoformat() if svc.created_at else None,
         updated_at=svc.updated_at.isoformat() if svc.updated_at else None,
     )
@@ -91,6 +101,8 @@ async def create_sub2api_service(request: Sub2ApiServiceCreate):
             api_key=request.api_key,
             enabled=request.enabled,
             priority=request.priority,
+            default_group_id=request.default_group_id,
+            default_proxy_id=request.default_proxy_id,
         )
         return _to_response(svc)
 
@@ -119,6 +131,8 @@ async def get_sub2api_service_full(service_id: int):
             "api_key": svc.api_key,
             "enabled": svc.enabled,
             "priority": svc.priority,
+            "default_group_id": svc.default_group_id,
+            "default_proxy_id": svc.default_proxy_id,
         }
 
 
@@ -142,6 +156,10 @@ async def update_sub2api_service(service_id: int, request: Sub2ApiServiceUpdate)
             update_data["enabled"] = request.enabled
         if request.priority is not None:
             update_data["priority"] = request.priority
+        if request.default_group_id is not None:
+            update_data["default_group_id"] = request.default_group_id
+        if request.default_proxy_id is not None:
+            update_data["default_proxy_id"] = request.default_proxy_id
 
         svc = crud.update_sub2api_service(db, service_id, **update_data)
         return _to_response(svc)
@@ -196,6 +214,9 @@ async def upload_accounts_to_sub2api(request: Sub2ApiUploadRequest):
 
         api_url = svc.api_url
         api_key = svc.api_key
+        # 使用请求参数，若未指定则使用服务默认值
+        group_id = request.group_id if request.group_id is not None else svc.default_group_id
+        proxy_id = request.proxy_id if request.proxy_id is not None else svc.default_proxy_id
 
     results = batch_upload_to_sub2api(
         request.account_ids,
@@ -203,5 +224,7 @@ async def upload_accounts_to_sub2api(request: Sub2ApiUploadRequest):
         api_key,
         concurrency=request.concurrency,
         priority=request.priority,
+        group_id=group_id,
+        proxy_id=proxy_id,
     )
     return results

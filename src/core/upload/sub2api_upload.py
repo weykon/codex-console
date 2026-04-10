@@ -22,6 +22,8 @@ def upload_to_sub2api(
     api_key: str,
     concurrency: int = 3,
     priority: int = 50,
+    group_id: Optional[int] = None,
+    proxy_id: Optional[int] = None,
 ) -> Tuple[bool, str]:
     """
     上传账号列表到 Sub2API 平台（不走代理）
@@ -32,6 +34,8 @@ def upload_to_sub2api(
         api_key: Admin API Key（x-api-key header）
         concurrency: 账号并发数，默认 3
         priority: 账号优先级，默认 50
+        group_id: 上传到的分组 ID（None 则跳过绑定）
+        proxy_id: 上传时绑定的代理 ID（None 则跳过绑定）
 
     Returns:
         (成功标志, 消息)
@@ -52,7 +56,7 @@ def upload_to_sub2api(
         if not acc.access_token:
             continue
         expires_at = int(acc.expires_at.timestamp()) if acc.expires_at else 0
-        account_items.append({
+        item = {
             "name": acc.email,
             "platform": "openai",
             "type": "oauth",
@@ -82,7 +86,12 @@ def upload_to_sub2api(
             "priority": priority,
             "rate_multiplier": 1,
             "auto_pause_on_expired": True,
-        })
+        }
+        if group_id is not None:
+            item["group_ids"] = [group_id]
+        if proxy_id is not None:
+            item["proxy_id"] = proxy_id
+        account_items.append(item)
 
     if not account_items:
         return False, "所有账号均缺少 access_token，无法上传"
@@ -95,7 +104,7 @@ def upload_to_sub2api(
             "proxies": [],
             "accounts": account_items,
         },
-        "skip_default_group_bind": True,
+        "skip_default_group_bind": group_id is None,
     }
 
     url = api_url.rstrip("/") + "/api/v1/admin/accounts/data"
@@ -138,6 +147,8 @@ def batch_upload_to_sub2api(
     api_key: str,
     concurrency: int = 3,
     priority: int = 50,
+    group_id: Optional[int] = None,
+    proxy_id: Optional[int] = None,
 ) -> dict:
     """
     批量上传指定 ID 的账号到 Sub2API 平台
@@ -169,7 +180,7 @@ def batch_upload_to_sub2api(
         if not accounts:
             return results
 
-        success, message = upload_to_sub2api(accounts, api_url, api_key, concurrency, priority)
+        success, message = upload_to_sub2api(accounts, api_url, api_key, concurrency, priority, group_id, proxy_id)
 
         if success:
             for acc in accounts:

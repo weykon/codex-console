@@ -714,7 +714,9 @@ def create_sub2api_service(
     api_url: str,
     api_key: str,
     enabled: bool = True,
-    priority: int = 0
+    priority: int = 0,
+    default_group_id: Optional[int] = None,
+    default_proxy_id: Optional[int] = None,
 ) -> Sub2ApiService:
     """创建 Sub2API 服务配置"""
     svc = Sub2ApiService(
@@ -723,6 +725,8 @@ def create_sub2api_service(
         api_key=api_key,
         enabled=enabled,
         priority=priority,
+        default_group_id=default_group_id,
+        default_proxy_id=default_proxy_id,
     )
     db.add(svc)
     db.commit()
