@@ -65,6 +65,7 @@ const elements = {
     sub2ApiServiceForm: document.getElementById('sub2api-service-form'),
     sub2ApiServiceModalTitle: document.getElementById('sub2api-service-modal-title'),
     testSub2ApiServiceBtn: document.getElementById('test-sub2api-service-btn'),
+    refreshSub2ApiGpBtn: document.getElementById('refresh-sub2api-gp-btn'),
     // Team Manager 服务管理
     addTmServiceBtn: document.getElementById('add-tm-service-btn'),
     tmServicesTable: document.getElementById('tm-services-table'),
@@ -392,6 +393,9 @@ function initEventListeners() {
     }
     if (elements.testSub2ApiServiceBtn) {
         elements.testSub2ApiServiceBtn.addEventListener('click', handleTestSub2ApiService);
+    }
+    if (elements.refreshSub2ApiGpBtn) {
+        elements.refreshSub2ApiGpBtn.addEventListener('click', handleRefreshSub2ApiGp);
     }
 }
 
@@ -1805,10 +1809,64 @@ function renderSub2ApiServices(services) {
     `).join('');
 }
 
+async function loadSub2ApiGroupsProxies(serviceId, selectedGroupId, selectedProxyId) {
+    const groupSel = document.getElementById('sub2api-service-group');
+    const proxySel = document.getElementById('sub2api-service-proxy');
+    if (!groupSel || !proxySel) return;
+
+    groupSel.innerHTML = '<option value="">加载中...</option>';
+    proxySel.innerHTML = '<option value="">加载中...</option>';
+
+    try {
+        const [groupsRes, proxiesRes] = await Promise.all([
+            api.get(`/sub2api-services/${serviceId}/groups`).catch(() => ({ items: [] })),
+            api.get(`/sub2api-services/${serviceId}/proxies`).catch(() => ({ items: [] })),
+        ]);
+
+        const groups = groupsRes.items || [];
+        const proxies = proxiesRes.items || [];
+
+        groupSel.innerHTML = '<option value="">-- 不指定 --</option>'
+            + groups.map(g => `<option value="${g.id}"${g.id === selectedGroupId ? ' selected' : ''}>${escapeHtml(g.name || g.id)} (${g.platform || ''})</option>`).join('');
+
+        proxySel.innerHTML = '<option value="">-- 不指定 --</option>'
+            + proxies.map(p => `<option value="${p.id}"${p.id === selectedProxyId ? ' selected' : ''}>${escapeHtml(p.name || p.id)}${p.host ? ' - ' + escapeHtml(p.host) : ''}</option>`).join('');
+    } catch (e) {
+        groupSel.innerHTML = '<option value="">加载失败</option>';
+        proxySel.innerHTML = '<option value="">加载失败</option>';
+    }
+}
+
+async function handleRefreshSub2ApiGp() {
+    const id = document.getElementById('sub2api-service-id').value;
+    if (!id) {
+        toast.error('请先保存服务后再刷新');
+        return;
+    }
+    elements.refreshSub2ApiGpBtn.disabled = true;
+    elements.refreshSub2ApiGpBtn.textContent = '刷新中...';
+    try {
+        const svc = await api.get(`/sub2api-services/${id}`);
+        await loadSub2ApiGroupsProxies(id, svc.default_group_id, svc.default_proxy_id);
+        toast.success('分组/代理已刷新');
+    } catch (e) {
+        toast.error('刷新失败: ' + e.message);
+    } finally {
+        elements.refreshSub2ApiGpBtn.disabled = false;
+        elements.refreshSub2ApiGpBtn.textContent = '🔄 刷新分组/代理';
+    }
+}
+
 function openSub2ApiServiceModal(svc = null) {
     _sub2apiEditingId = svc ? svc.id : null;
     elements.sub2ApiServiceModalTitle.textContent = svc ? '编辑 Sub2API 服务' : '添加 Sub2API 服务';
     elements.sub2ApiServiceForm.reset();
+    // Reset group/proxy dropdowns
+    const groupSel = document.getElementById('sub2api-service-group');
+    const proxySel = document.getElementById('sub2api-service-proxy');
+    if (groupSel) groupSel.innerHTML = '<option value="">-- 不指定 --</option>';
+    if (proxySel) proxySel.innerHTML = '<option value="">-- 不指定 --</option>';
+
     document.getElementById('sub2api-service-id').value = svc ? svc.id : '';
     if (svc) {
         document.getElementById('sub2api-service-name').value = svc.name || '';
@@ -1816,6 +1874,10 @@ function openSub2ApiServiceModal(svc = null) {
         document.getElementById('sub2api-service-priority').value = svc.priority ?? 0;
         document.getElementById('sub2api-service-enabled').checked = svc.enabled !== false;
         document.getElementById('sub2api-service-key').placeholder = svc.has_key ? '已配置，留空保持不变' : '请输入 API Key';
+        // Load group/proxy dropdowns from the sub2api instance
+        if (svc.id) {
+            loadSub2ApiGroupsProxies(svc.id, svc.default_group_id, svc.default_proxy_id);
+        }
     }
     elements.sub2ApiServiceEditModal.classList.add('active');
 }
@@ -1855,6 +1917,8 @@ async function handleSaveSub2ApiService(e) {
         api_key: document.getElementById('sub2api-service-key').value || undefined,
         priority: parseInt(document.getElementById('sub2api-service-priority').value) || 0,
         enabled: document.getElementById('sub2api-service-enabled').checked,
+        default_group_id: parseInt(document.getElementById('sub2api-service-group').value) || null,
+        default_proxy_id: parseInt(document.getElementById('sub2api-service-proxy').value) || null,
     };
     if (!id && !data.api_key) {
         toast.error('请填写 API Key');

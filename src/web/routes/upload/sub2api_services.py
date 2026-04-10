@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from ....database import crud
 from ....database.session import get_db
-from ....core.upload.sub2api_upload import test_sub2api_connection, batch_upload_to_sub2api
+from ....core.upload.sub2api_upload import test_sub2api_connection, batch_upload_to_sub2api, fetch_sub2api_groups, fetch_sub2api_proxies
 
 router = APIRouter()
 
@@ -228,3 +228,29 @@ async def upload_accounts_to_sub2api(request: Sub2ApiUploadRequest):
         proxy_id=proxy_id,
     )
     return results
+
+
+@router.get("/{service_id}/groups")
+async def get_sub2api_groups(service_id: int):
+    """代理转发：获取 Sub2API 实例的分组列表"""
+    with get_db() as db:
+        svc = crud.get_sub2api_service_by_id(db, service_id)
+        if not svc:
+            raise HTTPException(status_code=404, detail="Sub2API 服务不存在")
+        ok, result = fetch_sub2api_groups(svc.api_url, svc.api_key)
+        if not ok:
+            raise HTTPException(status_code=502, detail=result)
+        return {"items": result}
+
+
+@router.get("/{service_id}/proxies")
+async def get_sub2api_proxies(service_id: int):
+    """代理转发：获取 Sub2API 实例的代理列表"""
+    with get_db() as db:
+        svc = crud.get_sub2api_service_by_id(db, service_id)
+        if not svc:
+            raise HTTPException(status_code=404, detail="Sub2API 服务不存在")
+        ok, result = fetch_sub2api_proxies(svc.api_url, svc.api_key)
+        if not ok:
+            raise HTTPException(status_code=502, detail=result)
+        return {"items": result}
